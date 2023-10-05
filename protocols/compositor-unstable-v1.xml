@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="compositor_unstable_v1">
+
+  <interface name="zcompositor_manager_v1" version="1">
+    <description summary="information about windows and arranging windows">
+      Clients can use this interface to receive information such as title and 
+      PID of windows. They can also use it to position and resize windows.
+    </description>
+
+    <request name="get_window_info">
+      <description summary="provides information about a window">
+        The window_info event is sent after the creation of a window and any
+        changes of the information of a window.
+      </description>
+      <arg name="compositor" type="new_id" interface="zcompositor_v1"/>
+    </request>
+
+    <request name="set_window_area">
+      <description summary="set the area a surface should cover">
+        Sets the position and size of a surface.
+      </description>
+      <arg name="window_id" type="uint" summary="window id"/>
+      <arg name="x" type="int" summary="x position"/>
+      <arg name="y" type="int" summary="y position"/>
+      <arg name="width" type="int" summary="window width"/>
+      <arg name="height" type="int" summary="window height"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not">
+        Unreferences the compositor manager. This request must be called as soon as it's no longer used.
+
+        It can be called at any time by the client. The client will still have
+        to close any FDs it has been given.
+      </description>
+    </request>
+  </interface>
+  <interface name="zcompositor_v1" version="1">
+    <description summary="a compositor with information about windows">
+      This object represents a compositor with information about windows.
+    </description>
+
+    <event name="window_info">
+      <description summary="provides information about a window">
+        The window_info event is sent after the creation of a window and any
+        changes of the information of a window.
+      </description>
+      <arg name="window_id" type="uint" summary="window id"/>
+      <arg name="pid" type="int" summary="the PID of the application the window belongs to"/>
+      <arg name="title" type="string" summary="the title of the window"/>
+    </event>
+
+    <event name="done">
+      <description summary="all information about the windows have been sent">
+        This event is sent after information about all current windows 
+        or changes have been sent.
+      </description>
+    </event>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not">
+        Unreferences the frame. This request must be called as soon as its no
+        longer used.
+
+        It can be called at any time by the client. The client will still have
+        to close any FDs it has been given.
+      </description>
+    </request>
+  </interface>
+</protocol>

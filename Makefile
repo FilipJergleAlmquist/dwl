@@ -14,10 +14,11 @@ DWLCFLAGS = `$(PKG_CONFIG) --cflags $(PKGS)` $(DWLCPPFLAGS) $(DWLDEVCFLAGS) $(CF
 LDLIBS    = `$(PKG_CONFIG) --libs $(PKGS)` $(LIBS)
 
 all: dwl
-dwl: dwl.o util.o
+dwl: dwl.o util.o #compositor-v1.o
 	$(CC) dwl.o util.o $(LDLIBS) $(LDFLAGS) $(DWLCFLAGS) -o $@
-dwl.o: dwl.c config.mk config.h client.h xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h
+dwl.o: dwl.c config.mk config.h client.h xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h compositor-unstable-v1-protocol.h
 util.o: util.c util.h
+# compositor-v1.o: compositor-v1.c
 
 # wayland-scanner is a tool which generates C headers and rigging for Wayland
 # protocols, which are specified in XML. wlroots requires you to rig these up
@@ -31,6 +32,9 @@ xdg-shell-protocol.h:
 wlr-layer-shell-unstable-v1-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
 		protocols/wlr-layer-shell-unstable-v1.xml $@
+compositor-unstable-v1-protocol.h:
+	$(WAYLAND_SCANNER) server-header \
+		protocols/compositor-unstable-v1.xml $@
 
 config.h:
 	cp config.def.h $@

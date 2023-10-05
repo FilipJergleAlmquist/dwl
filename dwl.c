@@ -1,10 +1,14 @@
 /*
  * See LICENSE file for copyright and license details.
  */
+#include <assert.h>
+#include <compositor-v1.h>
+#include <compositor-unstable-v1-protocol.h>
 #include <getopt.h>
 #include <libinput.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,6 +130,7 @@ typedef struct {
 	uint32_t tags;
 	int isfloating, isurgent, isfullscreen;
 	uint32_t resize; /* configure serial of a pending resize */
+	uint32_t serial;
 } Client;
 
 typedef struct {
@@ -293,6 +298,8 @@ static void setfloating(Client *c, int floating);
 static void setfullscreen(Client *c, int fullscreen);
 static void setlayout(const Arg *arg);
 static void setmfact(const Arg *arg);
+static void setmode(struct wlr_output *output, struct wlr_output_state *pending,
+		int width, int height, float refresh_rate, bool custom);
 static void setmon(Client *c, Monitor *m, uint32_t newtags);
 static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
@@ -412,6 +419,146 @@ static xcb_atom_t netatom[NetLast];
 
 /* attempt to encapsulate suck into one file */
 #include "client.h"
+
+struct compositor_manager_v1 {
+	struct wl_global *global;
+	struct wl_listener display_destroy;
+	struct {
+		struct wl_signal destroy;
+	} events;
+};
+
+struct compositor_v1 {
+	struct wl_resource *resource;
+	struct compositor_manager_v1 *manager;
+};
+
+
+static struct compositor_manager_v1 *manager_from_resource(
+		struct wl_resource *resource);
+
+static void compositor_handle_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static void compositor_handle_resource_destroy(struct wl_resource *resource) {
+}
+
+static const struct zcompositor_v1_interface compositor_impl = {
+	.destroy = compositor_handle_destroy,
+};
+
+void get_window_info(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id) {
+	printf("Got window info request\n");
+	struct compositor_manager_v1 *manager =
+		manager_from_resource(manager_resource);
+
+	struct compositor_v1 *comp =
+		calloc(1, sizeof(struct compositor_v1));
+	if (comp == NULL) {
+		wl_resource_post_no_memory(manager_resource);
+		return;
+	}
+	comp->manager = manager;
+
+	uint32_t version = wl_resource_get_version(manager_resource);
+	comp->resource = wl_resource_create(client,
+		&zcompositor_v1_interface, version, id);
+	if (comp->resource == NULL) {
+		wl_client_post_no_memory(client);
+		free(comp);
+		return;
+	}
+	wl_resource_set_implementation(comp->resource, &compositor_impl, comp,
+		compositor_handle_resource_destroy);
+
+	Client *c;
+	wl_list_for_each(c, &fstack, flink)
+		zcompositor_v1_send_window_info(comp->resource, c->serial, client_get_pid(c), client_get_title(c));
+
+	zcompositor_v1_send_done(comp->resource);
+}
+
+void set_window_area(struct wl_client *client, struct wl_resource *manager_resource,
+		uint32_t window_id, int32_t x, int32_t y, int32_t width, int32_t height) {
+	printf("Got set window area request for %u: [%d %d %d %d]\n", window_id, x, y, width, height);
+	Client *c;
+	struct wlr_box geom = {
+		.x = x,
+		.y = y,
+		.width = width,
+		.height = height,
+	};
+
+	wl_list_for_each(c, &fstack, flink) {
+		if (c->serial == window_id) {
+			printf("Resizing window\n");
+			resize(c, geom, 0);
+			break;
+		}
+	}
+}
+
+
+static void manager_handle_destroy(struct wl_client *client,
+		struct wl_resource *manager_resource) {
+	wl_resource_destroy(manager_resource);
+}
+
+
+static const struct zcompositor_manager_v1_interface manager_impl = {
+	.get_window_info = get_window_info,
+	.set_window_area = set_window_area,
+	.destroy = manager_handle_destroy,
+};
+
+static struct compositor_manager_v1 *manager_from_resource(
+		struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource,
+		&zcompositor_manager_v1_interface, &manager_impl));
+	return wl_resource_get_user_data(resource);
+}
+
+static void manager_bind(struct wl_client *client, void *data, uint32_t version,
+		uint32_t id) {
+	struct wlr_export_dmabuf_manager_v1 *manager = data;
+
+	struct wl_resource *resource = wl_resource_create(client,
+		&zcompositor_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &manager_impl, manager,
+		NULL);
+}
+
+static void handle_display_destroy(struct wl_listener *listener, void *data) {
+	struct wlr_export_dmabuf_manager_v1 *manager =
+		wl_container_of(listener, manager, display_destroy);
+	wl_signal_emit_mutable(&manager->events.destroy, manager);
+	wl_list_remove(&manager->display_destroy.link);
+	wl_global_destroy(manager->global);
+	free(manager);
+	printf("Manager destroyed\n");
+}
+
+struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *display) {
+	struct compositor_manager_v1 *manager = ecalloc(1, sizeof(struct compositor_manager_v1));
+	wl_signal_init(&manager->events.destroy);
+	printf("Creating comp man v1 global\n");
+	manager->global = wl_global_create(display, &zcompositor_manager_v1_interface, 1, manager, manager_bind);
+	if (manager->global == NULL) {
+		printf("Global is null\n");
+		free(manager);
+	}
+	printf("Created global\n");
+	manager->display_destroy.notify = handle_display_destroy;
+	wl_display_add_destroy_listener(display, &manager->display_destroy);
+
+	return manager;
+}
 
 /* function implementations */
 void
@@ -897,6 +1044,7 @@ createmon(struct wl_listener *listener, void *data)
 	/* This event is raised by the backend when a new output (aka a display or
 	 * monitor) becomes available. */
 	struct wlr_output *wlr_output = data;
+	struct wlr_output_state pending = {0};
 	const MonitorRule *r;
 	size_t i;
 	Monitor *m = wlr_output->data = ecalloc(1, sizeof(*m));
@@ -927,6 +1075,13 @@ createmon(struct wl_listener *listener, void *data)
 	 * monitor's preferred mode; a more sophisticated compositor would let
 	 * the user configure it. */
 	wlr_output_set_mode(wlr_output, wlr_output_preferred_mode(wlr_output));
+	
+	setmode(wlr_output, &pending, mode_width, mode_height, mode_refresh, true);
+
+	if (!wlr_output_commit_state(wlr_output, &pending)) {
+		// Failed to commit output changes.
+		printf("Failed to set output mode [%d %d %f]\n", mode_width, mode_height, mode_refresh);
+	}
 
 	/* Set up event listeners */
 	LISTEN(&wlr_output->events.frame, &m->frame, rendermon);
@@ -1003,6 +1158,10 @@ createnotify(struct wl_listener *listener, void *data)
 	c = xdg_surface->data = ecalloc(1, sizeof(*c));
 	c->surface.xdg = xdg_surface;
 	c->bw = borderpx;
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	c->serial = ((now.tv_sec & 0xffff) << 16) | (now.tv_nsec & 0xffff);
 
 	LISTEN(&xdg_surface->events.map, &c->map, mapnotify);
 	LISTEN(&xdg_surface->events.unmap, &c->unmap, unmapnotify);
@@ -1233,6 +1392,7 @@ focusclient(Client *c, int lift)
 			client_set_border_color(c, focuscolor);
 	}
 
+	// TODO: Is surface activation important?
 	/* Deactivate old client if focus is changing */
 	if (old && (!c || client_surface(c) != old)) {
 		/* If an overlay is focused, don't focus or activate the client,
@@ -1849,6 +2009,7 @@ printstatus(void)
 	Client *c;
 	uint32_t occ, urg, sel;
 	const char *appid, *title;
+	pid_t pid;
 
 	wl_list_for_each(m, &mons, link) {
 		occ = urg = 0;
@@ -1862,10 +2023,12 @@ printstatus(void)
 		if ((c = focustop(m))) {
 			title = client_get_title(c);
 			appid = client_get_appid(c);
+			pid = client_get_pid(c);
 			printf("%s title %s\n", m->wlr_output->name, title ? title : broken);
 			printf("%s appid %s\n", m->wlr_output->name, appid ? appid : broken);
 			printf("%s fullscreen %u\n", m->wlr_output->name, c->isfullscreen);
 			printf("%s floating %u\n", m->wlr_output->name, c->isfloating);
+			printf("%s pid %u\n", m->wlr_output->name, pid);
 			sel = c->tags;
 		} else {
 			printf("%s title \n", m->wlr_output->name);
@@ -2043,13 +2206,15 @@ setfullscreen(Client *c, int fullscreen)
 	wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
 			? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
 
-	if (fullscreen) {
-		c->prev = c->geom;
-		resize(c, c->mon->m, 0);
-	} else {
-		/* restore previous size instead of arrange for floating windows since
-		 * client positions are set by the user and cannot be recalculated */
-		resize(c, c->prev, 0);
+	if (fullscreen_resize) {
+		if (fullscreen) {
+			c->prev = c->geom;
+			resize(c, c->mon->m, 0);
+		} else {
+			/* restore previous size instead of arrange for floating windows since
+			* client positions are set by the user and cannot be recalculated */
+			resize(c, c->prev, 0);
+		}
 	}
 	arrange(c->mon);
 	printstatus();
@@ -2082,6 +2247,42 @@ setmfact(const Arg *arg)
 		return;
 	selmon->mfact = f;
 	arrange(selmon);
+}
+
+void 
+setmode(struct wlr_output *output, struct wlr_output_state *pending,
+		int width, int height, float refresh_rate, bool custom) {
+	struct wlr_output_mode *mode, *best = NULL;
+	// Not all floating point integers can be represented exactly
+	// as (int)(1000 * mHz / 1000.f)
+	// round() the result to avoid any error
+	int mhz = (int)roundf(refresh_rate * 1000);
+
+	if (wl_list_empty(&output->modes) || custom) {
+		wlr_output_state_set_custom_mode(pending, width, height,
+			refresh_rate > 0 ? mhz : 0);
+		return;
+	}
+
+
+	wl_list_for_each(mode, &output->modes, link) {
+		if (mode->width == width && mode->height == height) {
+			if (mode->refresh == mhz) {
+				best = mode;
+				break;
+			}
+			if (best == NULL || mode->refresh > best->refresh) {
+				best = mode;
+			}
+		}
+	}
+	if (!best) {
+		printf("Configured mode for %s not available\n", output->name);
+		best = wlr_output_preferred_mode(output);
+	} else {
+		printf("Assigning configured mode to %s\n", output->name);
+	}
+	wlr_output_state_set_mode(pending, best);
 }
 
 void
@@ -2188,6 +2389,7 @@ setup(void)
 	wlr_viewporter_create(dpy);
 	wlr_single_pixel_buffer_manager_v1_create(dpy);
 	wlr_subcompositor_create(dpy);
+	compositor_manager_v1_create(dpy);
 
 	/* Initializes the interface used to implement urgency hints */
 	activation = wlr_xdg_activation_v1_create(dpy);

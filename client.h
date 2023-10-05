@@ -206,6 +206,24 @@ client_get_title(Client *c)
 	return c->surface.xdg->toplevel->title;
 }
 
+static inline pid_t 
+client_get_pid(Client *c) {
+	pid_t pid;
+	struct wlr_xwayland_surface *xwayland_surf;
+	struct wlr_xdg_surface *xdg_surf;
+	struct wl_client *client;
+#ifdef XWAYLAND
+	if (client_is_x11(c)) {
+		xwayland_surf = c->surface.xwayland;
+		return xwayland_surf->pid;
+	}
+#endif
+	xdg_surf = c->surface.xdg;
+	client = wl_resource_get_client(xdg_surf->resource);
+	wl_client_get_credentials(client, &pid, NULL, NULL);
+	return pid;
+}
+
 static inline int
 client_is_float_type(Client *c)
 {
