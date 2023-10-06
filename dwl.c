@@ -265,6 +265,7 @@ static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
 static Client *focustop(Monitor *m);
 static void fullscreennotify(struct wl_listener *listener, void *data);
+static uint32_t generate_serial(void);
 static void handlesig(int signo);
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
@@ -1158,10 +1159,7 @@ createnotify(struct wl_listener *listener, void *data)
 	c = xdg_surface->data = ecalloc(1, sizeof(*c));
 	c->surface.xdg = xdg_surface;
 	c->bw = borderpx;
-
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	c->serial = ((now.tv_sec & 0xffff) << 16) | (now.tv_nsec & 0xffff);
+	c->serial = generate_serial();
 
 	LISTEN(&xdg_surface->events.map, &c->map, mapnotify);
 	LISTEN(&xdg_surface->events.unmap, &c->unmap, unmapnotify);
@@ -1485,6 +1483,13 @@ fullscreennotify(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, fullscreen);
 	setfullscreen(c, client_wants_fullscreen(c));
+}
+
+uint32_t 
+generate_serial(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return ((now.tv_sec & 0xffff) << 16) | (now.tv_nsec & 0xffff);
 }
 
 void
@@ -2927,6 +2932,7 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	c->surface.xwayland = xsurface;
 	c->type = xsurface->override_redirect ? X11Unmanaged : X11Managed;
 	c->bw = borderpx;
+	c->serial = generate_serial();
 
 	/* Listen to the various events it can emit */
 	LISTEN(&xsurface->events.map, &c->map, mapnotify);
