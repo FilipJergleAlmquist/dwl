@@ -37,6 +37,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_touch.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
@@ -49,6 +50,7 @@
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
@@ -314,6 +316,10 @@ static void togglefloating(const Arg *arg);
 static void togglefullscreen(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void touchdown(struct wl_listener *listener, void *data);
+static void touchframe(struct wl_listener *listener, void *data);
+static void touchmotion(struct wl_listener *listener, void *data);
+static void touchup(struct wl_listener *listener, void *data);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -322,6 +328,7 @@ static void updatetitle(struct wl_listener *listener, void *data);
 static void urgent(struct wl_listener *listener, void *data);
 static void view(const Arg *arg);
 static void virtualkeyboard(struct wl_listener *listener, void *data);
+static void virtualpointer(struct wl_listener *listener, void *data);
 static Monitor *xytomon(double x, double y);
 static void xytonode(double x, double y, struct wlr_surface **psurface,
 		Client **pc, LayerSurface **pl, double *nx, double *ny);
@@ -356,6 +363,7 @@ static struct wlr_input_inhibit_manager *input_inhibit_mgr;
 static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_output_manager_v1 *output_mgr;
 static struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
+static struct wlr_virtual_pointer_manager_v1 *virtual_pointer_mgr;
 
 static struct wlr_cursor *cursor;
 static struct wlr_xcursor_manager *cursor_mgr;
@@ -387,6 +395,7 @@ static struct wl_listener idle_inhibitor_destroy = {.notify = destroyidleinhibit
 static struct wl_listener layout_change = {.notify = updatemons};
 static struct wl_listener new_input = {.notify = inputdevice};
 static struct wl_listener new_virtual_keyboard = {.notify = virtualkeyboard};
+static struct wl_listener new_virtual_pointer = {.notify = virtualpointer};
 static struct wl_listener new_output = {.notify = createmon};
 static struct wl_listener new_xdg_surface = {.notify = createnotify};
 static struct wl_listener new_xdg_decoration = {.notify = createdecoration};
@@ -401,6 +410,10 @@ static struct wl_listener request_start_drag = {.notify = requeststartdrag};
 static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener session_lock_create_lock = {.notify = locksession};
 static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
+static struct wl_listener touch_down = {.notify = touchdown};
+static struct wl_listener touch_frame = {.notify = touchframe};
+static struct wl_listener touch_motion = {.notify = touchmotion};
+static struct wl_listener touch_up = {.notify = touchup};
 
 #ifdef XWAYLAND
 static void activatex11(struct wl_listener *listener, void *data);
@@ -451,7 +464,6 @@ static const struct zcompositor_v1_interface compositor_impl = {
 };
 
 void get_window_info(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id) {
-	printf("Got window info request\n");
 	struct compositor_manager_v1 *manager =
 		manager_from_resource(manager_resource);
 
@@ -724,6 +736,8 @@ buttonpress(struct wl_listener *listener, void *data)
 	uint32_t mods;
 	Client *c;
 	const Button *b;
+	struct wlr_surface *surface;
+	double sx = 0; double sy = 0;
 
 	IDLE_NOTIFY_ACTIVITY;
 
@@ -734,7 +748,7 @@ buttonpress(struct wl_listener *listener, void *data)
 			break;
 
 		/* Change focus if the button was _pressed_ over a client */
-		xytonode(cursor->x, cursor->y, NULL, &c, NULL, NULL, NULL);
+		xytonode(cursor->x, cursor->y, &surface, &c, NULL, &sx, &sy);
 		if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
 			focusclient(c, 1);
 
@@ -770,6 +784,8 @@ buttonpress(struct wl_listener *listener, void *data)
 	 * pointer focus that a button press has occurred */
 	wlr_seat_pointer_notify_button(seat,
 			event->time_msec, event->button, event->state);
+
+	printf("Cursor at (%lf, %lf) surface: %lu\n", sx, sy, (long)(void*) surface);
 }
 
 void
@@ -1216,6 +1232,50 @@ createpointer(struct wlr_pointer *pointer)
 }
 
 void
+createtouch(struct wlr_touch *touch)
+{
+	if (wlr_input_device_is_libinput(&touch->base)) {
+		struct libinput_device *libinput_device = (struct libinput_device*)
+			wlr_libinput_get_device_handle(&touch->base);
+
+		if (libinput_device_config_tap_get_finger_count(libinput_device)) {
+			libinput_device_config_tap_set_enabled(libinput_device, tap_to_click);
+			libinput_device_config_tap_set_drag_enabled(libinput_device, tap_and_drag);
+			libinput_device_config_tap_set_drag_lock_enabled(libinput_device, drag_lock);
+			libinput_device_config_tap_set_button_map(libinput_device, button_map);
+		}
+
+		if (libinput_device_config_scroll_has_natural_scroll(libinput_device))
+			libinput_device_config_scroll_set_natural_scroll_enabled(libinput_device, natural_scrolling);
+
+		if (libinput_device_config_dwt_is_available(libinput_device))
+			libinput_device_config_dwt_set_enabled(libinput_device, disable_while_typing);
+
+		if (libinput_device_config_left_handed_is_available(libinput_device))
+			libinput_device_config_left_handed_set(libinput_device, left_handed);
+
+		if (libinput_device_config_middle_emulation_is_available(libinput_device))
+			libinput_device_config_middle_emulation_set_enabled(libinput_device, middle_button_emulation);
+
+		if (libinput_device_config_scroll_get_methods(libinput_device) != LIBINPUT_CONFIG_SCROLL_NO_SCROLL)
+			libinput_device_config_scroll_set_method (libinput_device, scroll_method);
+
+		if (libinput_device_config_click_get_methods(libinput_device) != LIBINPUT_CONFIG_CLICK_METHOD_NONE)
+			libinput_device_config_click_set_method (libinput_device, click_method);
+
+		if (libinput_device_config_send_events_get_modes(libinput_device))
+			libinput_device_config_send_events_set_mode(libinput_device, send_events_mode);
+
+		if (libinput_device_config_accel_is_available(libinput_device)) {
+			libinput_device_config_accel_set_profile(libinput_device, accel_profile);
+			libinput_device_config_accel_set_speed(libinput_device, accel_speed);
+		}
+	}
+
+	wlr_cursor_attach_input_device(cursor, &touch->base);
+}
+
+void
 cursorframe(struct wl_listener *listener, void *data)
 {
 	/* This event is forwarded by the cursor when a pointer emits an frame
@@ -1529,6 +1589,7 @@ inputdevice(struct wl_listener *listener, void *data)
 	 * available. */
 	struct wlr_input_device *device = data;
 	uint32_t caps;
+	printf("New input device of type %u\n", device->type);
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
@@ -1536,6 +1597,9 @@ inputdevice(struct wl_listener *listener, void *data)
 		break;
 	case WLR_INPUT_DEVICE_POINTER:
 		createpointer(wlr_pointer_from_input_device(device));
+		break;
+	case WLR_INPUT_DEVICE_TOUCH:
+		createtouch(wlr_touch_from_input_device(device));
 		break;
 	default:
 		/* TODO handle other input device types */
@@ -1546,9 +1610,7 @@ inputdevice(struct wl_listener *listener, void *data)
 	 * communiciated to the client. In dwl we always have a cursor, even if
 	 * there are no pointer devices, so we always include that capability. */
 	/* TODO do we actually require a cursor? */
-	caps = WL_SEAT_CAPABILITY_POINTER;
-	if (!wl_list_empty(&keyboards))
-		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+	caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_TOUCH | WL_SEAT_CAPABILITY_KEYBOARD;
 	wlr_seat_set_capabilities(seat, caps);
 }
 
@@ -2395,6 +2457,9 @@ setup(void)
 	wlr_single_pixel_buffer_manager_v1_create(dpy);
 	wlr_subcompositor_create(dpy);
 	compositor_manager_v1_create(dpy);
+	virtual_pointer_mgr = wlr_virtual_pointer_manager_v1_create(dpy);
+	wl_signal_add(&virtual_pointer_mgr->events.new_virtual_pointer,
+			&new_virtual_pointer);
 
 	/* Initializes the interface used to implement urgency hints */
 	activation = wlr_xdg_activation_v1_create(dpy);
@@ -2478,6 +2543,11 @@ setup(void)
 	wl_signal_add(&cursor->events.button, &cursor_button);
 	wl_signal_add(&cursor->events.axis, &cursor_axis);
 	wl_signal_add(&cursor->events.frame, &cursor_frame);
+	wl_signal_add(&cursor->events.touch_motion, &touch_motion);
+	wl_signal_add(&cursor->events.touch_down, &touch_down);
+	wl_signal_add(&cursor->events.touch_up, &touch_up);
+	wl_signal_add(&cursor->events.touch_frame, &touch_frame);
+
 
 	/*
 	 * Configures a seat, which is a single "seat" at which a user sits and
@@ -2642,6 +2712,80 @@ toggleview(const Arg *arg)
 	focusclient(focustop(selmon), 1);
 	arrange(selmon);
 	printstatus();
+}
+
+void
+touchdown(struct wl_listener *listener, void *data)
+{
+	struct wlr_touch_down_event *event = data;
+
+	IDLE_NOTIFY_ACTIVITY;
+
+	struct wlr_surface *surface;
+	Client *c;
+	double sx = 0, sy = 0;
+	xytonode(event->x * mode_width, event->y * mode_height, &surface, &c, NULL, &sx, &sy);
+
+	if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
+			focusclient(c, 1);
+
+	printf("Touchdown [%d] (%lf, %lf) => (%lf, %lf), surface: %lu\n", event->touch_id, event->x, event->y, sx, sy, (long)(void*) surface);
+
+	if (!surface) {
+		return;
+	}
+
+	wlr_seat_touch_notify_down(seat, surface,
+			event->time_msec, event->touch_id, sx, sy);
+
+	// wlr_cursor_warp_absolute(cursor, &event->touch->base, sx, sy);
+}
+
+void
+touchframe(struct wl_listener *listener, void *data)
+{
+	/* This event is forwarded by the cursor when a touch emits an frame
+	 * event. Frame events are sent after regular touch events to group
+	 * multiple events together. For instance, two axis events may happen at the
+	 * same time, in which case a frame event won't be sent in between. */
+	/* Notify the client with touch focus of the frame event. */
+	printf("Touchframe\n");
+
+	wlr_seat_touch_notify_frame(seat);
+}
+
+void
+touchmotion(struct wl_listener *listener, void *data) {
+	struct wlr_touch_motion_event *event = data;
+	struct wlr_surface *surface;
+	Client *c;
+	double sx = 0, sy = 0;
+	xytonode(event->x * mode_width, event->y * mode_height, &surface, &c, NULL, &sx, &sy);
+
+	if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
+			focusclient(c, 1);
+
+	printf("Touchmotion [%d] (%lf, %lf) => (%lf, %lf)\n", event->touch_id, event->x, event->y, sx, sy);
+
+
+	wlr_seat_touch_notify_motion(seat, event->time_msec,
+		event->touch_id, sx, sy);
+
+	// wlr_cursor_warp_absolute(cursor, &event->touch->base, sx, sy);
+}
+
+void
+touchup(struct wl_listener *listener, void *data)
+{
+	struct wlr_touch_up_event *event = data;
+
+	printf("Touchup [%d]\n", event->touch_id);
+
+
+	IDLE_NOTIFY_ACTIVITY;
+
+	wlr_seat_touch_notify_up(seat,
+			event->time_msec, event->touch_id);
 }
 
 void
@@ -2824,6 +2968,16 @@ virtualkeyboard(struct wl_listener *listener, void *data)
 {
 	struct wlr_virtual_keyboard_v1 *keyboard = data;
 	createkeyboard(&keyboard->keyboard);
+}
+
+void
+virtualpointer(struct wl_listener *listener, void *data)
+{
+	struct wlr_virtual_pointer_v1_new_pointer_event *event = data;
+	struct wlr_virtual_pointer_v1 *pointer = event->new_pointer;
+	struct wlr_input_device *device = &pointer->pointer.base;
+	printf("New virtual input device of type %u\n", device->type);
+	createpointer(&pointer->pointer);
 }
 
 Monitor *
