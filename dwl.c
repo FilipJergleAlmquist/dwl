@@ -1,3 +1,4 @@
+#define XWAYLAND
 /*
  * See LICENSE file for copyright and license details.
  */
@@ -227,6 +228,17 @@ typedef struct {
 	struct wl_listener destroy;
 } SessionLock;
 
+typedef struct {
+	struct wl_list link;
+	struct wlr_seat *seat;
+	struct wlr_cursor *cursor;
+	struct wlr_xcursor_manager *cursor_mgr;
+	struct wl_list keyboards;
+} Seat;
+
+Seat* createseat(struct wl_display *dpy);
+Seat* firstseat(void);
+
 /* function declarations */
 static void applybounds(Client *c, struct wlr_box *bbox);
 static void applyrules(Client *c);
@@ -365,15 +377,15 @@ static struct wlr_output_manager_v1 *output_mgr;
 static struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
 static struct wlr_virtual_pointer_manager_v1 *virtual_pointer_mgr;
 
-static struct wlr_cursor *cursor;
-static struct wlr_xcursor_manager *cursor_mgr;
+// static struct wlr_cursor *cursor;
+// static struct wlr_xcursor_manager *cursor_mgr;
 
 static struct wlr_session_lock_manager_v1 *session_lock_mgr;
 static struct wlr_scene_rect *locked_bg;
 static struct wlr_session_lock_v1 *cur_lock;
 
-static struct wlr_seat *seat;
-static struct wl_list keyboards;
+static struct wl_list seats;
+// static struct wl_list keyboards;
 static unsigned int cursor_mode;
 static Client *grabc;
 static int grabcx, grabcy; /* client-relative */
@@ -573,6 +585,79 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 	return manager;
 }
 
+Seat* createseat(struct wl_display *dpy) {
+	Seat *s = ecalloc(1, sizeof(Seat));
+	int len = wl_list_length(&seats);
+	char name[7];
+	sprintf(name, "seat%d", len);
+	struct wlr_seat *seat = wlr_seat_create(dpy, name);
+	s->seat = seat;
+	wl_list_insert(&seats, &s->link);
+	/*
+	 * Creates a cursor, which is a wlroots utility for tracking the cursor
+	 * image shown on screen.
+	 */
+	struct wlr_cursor *cursor = wlr_cursor_create();
+	s->cursor = cursor;
+	wlr_cursor_attach_output_layout(s->cursor, output_layout);
+
+	/* Creates an xcursor manager, another wlroots utility which loads up
+	 * Xcursor themes to source cursor images from and makes sure that cursor
+	 * images are available at all scale factors on the screen (necessary for
+	 * HiDPI support). Scaled cursors will be loaded with each output. */
+	s->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+	setenv("XCURSOR_SIZE", "24", 1);
+
+	/*
+	 * wlr_cursor *only* displays an image on screen. It does not move around
+	 * when the pointer moves. However, we can attach input devices to it, and
+	 * it will generate aggregate events for all of them. In these events, we
+	 * can choose how we want to process them, forwarding them to clients and
+	 * moving the cursor around. More detail on this process is described in my
+	 * input handling blog post:
+	 *
+	 * https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html
+	 *
+	 * And more comments are sprinkled throughout the notify functions above.
+	 */
+	wl_signal_add(&cursor->events.motion, &cursor_motion);
+	wl_signal_add(&cursor->events.motion_absolute, &cursor_motion_absolute);
+	wl_signal_add(&cursor->events.button, &cursor_button);
+	wl_signal_add(&cursor->events.axis, &cursor_axis);
+	wl_signal_add(&cursor->events.frame, &cursor_frame);
+	wl_signal_add(&cursor->events.touch_motion, &touch_motion);
+	wl_signal_add(&cursor->events.touch_down, &touch_down);
+	wl_signal_add(&cursor->events.touch_up, &touch_up);
+	wl_signal_add(&cursor->events.touch_frame, &touch_frame);
+
+
+	/*
+	 * Configures a seat, which is a single "seat" at which a user sits and
+	 * operates the computer. This conceptually includes up to one keyboard,
+	 * pointer, touch, and drawing tablet device. We also rig up a listener to
+	 * let us know when new input devices are available on the backend.
+	 */
+	wl_list_init(&s->keyboards);
+	wl_signal_add(&backend->events.new_input, &new_input);
+	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
+	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
+			&new_virtual_keyboard);
+
+	wl_signal_add(&seat->events.request_set_cursor, &request_cursor);
+	wl_signal_add(&seat->events.request_set_selection, &request_set_sel);
+	wl_signal_add(&seat->events.request_set_primary_selection, &request_set_psel);
+	wl_signal_add(&seat->events.request_start_drag, &request_start_drag);
+	wl_signal_add(&seat->events.start_drag, &start_drag);
+
+	return s;
+}
+
+Seat* firstseat(void) {
+	Seat *s;
+	wl_list_for_each(s, &seats, link) break;
+	return s;
+}
+
 /* function implementations */
 void
 applybounds(Client *c, struct wlr_box *bbox)
@@ -674,6 +759,7 @@ arrangelayer(Monitor *m, struct wl_list *list, struct wlr_box *usable_area, int 
 void
 arrangelayers(Monitor *m)
 {
+	struct wlr_seat *seat = firstseat()->seat;
 	int i;
 	struct wlr_box usable_area = m->m;
 	uint32_t layers_above_shell[] = {
@@ -716,6 +802,8 @@ arrangelayers(Monitor *m)
 void
 axisnotify(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* This event is forwarded by the cursor when a pointer emits an axis event,
 	 * for example when you move the scroll wheel. */
 	struct wlr_pointer_axis_event *event = data;
@@ -731,6 +819,9 @@ axisnotify(struct wl_listener *listener, void *data)
 void
 buttonpress(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_cursor *cursor = firstseat()->cursor;
+
 	struct wlr_pointer_button_event *event = data;
 	struct wlr_keyboard *keyboard;
 	uint32_t mods;
@@ -828,10 +919,14 @@ cleanup(void)
 	wlr_scene_node_destroy(&scene->tree.node);
 	wlr_renderer_destroy(drw);
 	wlr_allocator_destroy(alloc);
-	wlr_xcursor_manager_destroy(cursor_mgr);
-	wlr_cursor_destroy(cursor);
+	Seat *s;
+	wl_list_for_each(s, &seats, link) {
+		wlr_xcursor_manager_destroy(s->cursor_mgr);
+		wlr_cursor_destroy(s->cursor);
+		wlr_seat_destroy(s->seat);
+		free(s);
+	}
 	wlr_output_layout_destroy(output_layout);
-	wlr_seat_destroy(seat);
 	wl_display_destroy(dpy);
 }
 
@@ -957,6 +1052,9 @@ createidleinhibitor(struct wl_listener *listener, void *data)
 void
 createkeyboard(struct wlr_keyboard *keyboard)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wl_list keyboards = firstseat()->keyboards;
+
 	struct xkb_context *context;
 	struct xkb_keymap *keymap;
 	Keyboard *kb = keyboard->data = ecalloc(1, sizeof(*kb));
@@ -1039,6 +1137,8 @@ createlayersurface(struct wl_listener *listener, void *data)
 void
 createlocksurface(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	SessionLock *lock = wl_container_of(listener, lock, new_surface);
 	struct wlr_session_lock_surface_v1 *lock_surface = data;
 	Monitor *m = lock_surface->output->data;
@@ -1058,6 +1158,8 @@ createlocksurface(struct wl_listener *listener, void *data)
 void
 createmon(struct wl_listener *listener, void *data)
 {
+	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+
 	/* This event is raised by the backend when a new output (aka a display or
 	 * monitor) becomes available. */
 	struct wlr_output *wlr_output = data;
@@ -1190,6 +1292,8 @@ createnotify(struct wl_listener *listener, void *data)
 void
 createpointer(struct wlr_pointer *pointer)
 {
+	struct wlr_cursor *cursor = firstseat()->cursor;
+
 	if (wlr_input_device_is_libinput(&pointer->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
 			wlr_libinput_get_device_handle(&pointer->base);
@@ -1234,6 +1338,8 @@ createpointer(struct wlr_pointer *pointer)
 void
 createtouch(struct wlr_touch *touch)
 {
+	struct wlr_cursor *cursor = firstseat()->cursor;
+
 	if (wlr_input_device_is_libinput(&touch->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
 			wlr_libinput_get_device_handle(&touch->base);
@@ -1278,6 +1384,8 @@ createtouch(struct wlr_touch *touch)
 void
 cursorframe(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* This event is forwarded by the cursor when a pointer emits an frame
 	 * event. Frame events are sent after regular pointer events to group
 	 * multiple events together. For instance, two axis events may happen at the
@@ -1321,6 +1429,8 @@ destroylayersurfacenotify(struct wl_listener *listener, void *data)
 void
 destroylock(SessionLock *lock, int unlock)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	wlr_seat_keyboard_notify_clear_focus(seat);
 	if ((locked = !unlock))
 		goto destroy;
@@ -1343,6 +1453,8 @@ destroy:
 void
 destroylocksurface(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	Monitor *m = wl_container_of(listener, m, destroy_lock_surface);
 	struct wlr_session_lock_surface_v1 *surface, *lock_surface = m->lock_surface;
 
@@ -1415,6 +1527,8 @@ dirtomon(enum wlr_direction dir)
 void
 focusclient(Client *c, int lift)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct wlr_surface *old = seat->keyboard_state.focused_surface;
 	int unused_lx, unused_ly, old_client_type;
 	Client *old_c = NULL;
@@ -1591,6 +1705,9 @@ inputdevice(struct wl_listener *listener, void *data)
 	uint32_t caps;
 	printf("New input device of type %u\n", device->type);
 
+	Seat *s = NULL;
+	wl_list_for_each(s, &seats, link) break;
+
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
 		createkeyboard(wlr_keyboard_from_input_device(device));
@@ -1599,6 +1716,7 @@ inputdevice(struct wl_listener *listener, void *data)
 		createpointer(wlr_pointer_from_input_device(device));
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
+		s = createseat(dpy);
 		createtouch(wlr_touch_from_input_device(device));
 		break;
 	default:
@@ -1611,7 +1729,7 @@ inputdevice(struct wl_listener *listener, void *data)
 	 * there are no pointer devices, so we always include that capability. */
 	/* TODO do we actually require a cursor? */
 	caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_TOUCH | WL_SEAT_CAPABILITY_KEYBOARD;
-	wlr_seat_set_capabilities(seat, caps);
+	wlr_seat_set_capabilities(s->seat, caps);
 }
 
 int
@@ -1637,6 +1755,8 @@ keybinding(uint32_t mods, xkb_keysym_t sym)
 void
 keypress(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	int i;
 	/* This event is raised when a key is pressed or released. */
 	Keyboard *kb = wl_container_of(listener, kb, key);
@@ -1684,6 +1804,8 @@ keypress(struct wl_listener *listener, void *data)
 void
 keypressmod(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* This event is raised when a modifier key, such as shift or alt, is
 	 * pressed. We simply communicate this to the client. */
 	Keyboard *kb = wl_container_of(listener, kb, modifiers);
@@ -1861,6 +1983,8 @@ monocle(Monitor *m)
 void
 motionabsolute(struct wl_listener *listener, void *data)
 {
+	struct wlr_cursor *cursor = firstseat()->cursor;
+
 	/* This event is forwarded by the cursor when a pointer emits an _absolute_
 	 * motion event, from 0..1 on each axis. This happens, for example, when
 	 * wlroots is running under a Wayland window rather than KMS+DRM, and you
@@ -1875,6 +1999,10 @@ motionabsolute(struct wl_listener *listener, void *data)
 void
 motionnotify(uint32_t time)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_cursor *cursor = firstseat()->cursor;
+	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+
 	double sx = 0, sy = 0;
 	Client *c = NULL, *w = NULL;
 	LayerSurface *l = NULL;
@@ -1930,6 +2058,7 @@ motionnotify(uint32_t time)
 void
 motionrelative(struct wl_listener *listener, void *data)
 {
+	struct wlr_cursor *cursor = firstseat()->cursor;
 	/* This event is forwarded by the cursor when a pointer emits a _relative_
 	 * pointer motion event (i.e. a delta) */
 	struct wlr_pointer_motion_event *event = data;
@@ -1945,6 +2074,9 @@ motionrelative(struct wl_listener *listener, void *data)
 void
 moveresize(const Arg *arg)
 {
+	struct wlr_cursor *cursor = firstseat()->cursor;
+	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+
 	if (cursor_mode != CurNormal && cursor_mode != CurPressed)
 		return;
 	xytonode(cursor->x, cursor->y, NULL, &grabc, NULL, NULL, NULL);
@@ -2045,6 +2177,8 @@ void
 pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 		uint32_t time)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct timespec now;
 	int internal_call = !time;
 
@@ -2144,6 +2278,8 @@ skip:
 void
 requeststartdrag(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct wlr_seat_request_start_drag_event *event = data;
 
 	if (wlr_seat_validate_pointer_grab_serial(seat, event->origin,
@@ -2211,6 +2347,9 @@ run(char *startup_cmd)
 	}
 	printstatus();
 
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_cursor *cursor = firstseat()->cursor;
+	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
 	/* At this point the outputs are initialized, choose initial selmon based on
 	 * cursor position, and set default cursor image */
 	selmon = xytomon(cursor->x, cursor->y);
@@ -2232,6 +2371,9 @@ run(char *startup_cmd)
 void
 setcursor(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_cursor *cursor = firstseat()->cursor;
+
 	/* This event is raised by the seat when a client provides a cursor image */
 	struct wlr_seat_pointer_request_set_cursor_event *event = data;
 	/* If we're "grabbing" the cursor, don't use the client's image, we will
@@ -2378,6 +2520,8 @@ setmon(Client *c, Monitor *m, uint32_t newtags)
 void
 setpsel(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* This event is raised by the seat when a client wants to set the selection,
 	 * usually when the user copies something. wlroots allows compositors to
 	 * ignore such requests if they so choose, but in dwl we always honor
@@ -2389,6 +2533,8 @@ setpsel(struct wl_listener *listener, void *data)
 void
 setsel(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	
 	/* This event is raised by the seat when a client wants to set the selection,
 	 * usually when the user copies something. wlroots allows compositors to
 	 * ignore such requests if they so choose, but in dwl we always honor
@@ -2512,60 +2658,8 @@ setup(void)
 	xdg_decoration_mgr = wlr_xdg_decoration_manager_v1_create(dpy);
 	wl_signal_add(&xdg_decoration_mgr->events.new_toplevel_decoration, &new_xdg_decoration);
 
-	/*
-	 * Creates a cursor, which is a wlroots utility for tracking the cursor
-	 * image shown on screen.
-	 */
-	cursor = wlr_cursor_create();
-	wlr_cursor_attach_output_layout(cursor, output_layout);
-
-	/* Creates an xcursor manager, another wlroots utility which loads up
-	 * Xcursor themes to source cursor images from and makes sure that cursor
-	 * images are available at all scale factors on the screen (necessary for
-	 * HiDPI support). Scaled cursors will be loaded with each output. */
-	cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
-	setenv("XCURSOR_SIZE", "24", 1);
-
-	/*
-	 * wlr_cursor *only* displays an image on screen. It does not move around
-	 * when the pointer moves. However, we can attach input devices to it, and
-	 * it will generate aggregate events for all of them. In these events, we
-	 * can choose how we want to process them, forwarding them to clients and
-	 * moving the cursor around. More detail on this process is described in my
-	 * input handling blog post:
-	 *
-	 * https://drewdevault.com/2018/07/17/Input-handling-in-wlroots.html
-	 *
-	 * And more comments are sprinkled throughout the notify functions above.
-	 */
-	wl_signal_add(&cursor->events.motion, &cursor_motion);
-	wl_signal_add(&cursor->events.motion_absolute, &cursor_motion_absolute);
-	wl_signal_add(&cursor->events.button, &cursor_button);
-	wl_signal_add(&cursor->events.axis, &cursor_axis);
-	wl_signal_add(&cursor->events.frame, &cursor_frame);
-	wl_signal_add(&cursor->events.touch_motion, &touch_motion);
-	wl_signal_add(&cursor->events.touch_down, &touch_down);
-	wl_signal_add(&cursor->events.touch_up, &touch_up);
-	wl_signal_add(&cursor->events.touch_frame, &touch_frame);
-
-
-	/*
-	 * Configures a seat, which is a single "seat" at which a user sits and
-	 * operates the computer. This conceptually includes up to one keyboard,
-	 * pointer, touch, and drawing tablet device. We also rig up a listener to
-	 * let us know when new input devices are available on the backend.
-	 */
-	wl_list_init(&keyboards);
-	wl_signal_add(&backend->events.new_input, &new_input);
-	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
-	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
-			&new_virtual_keyboard);
-	seat = wlr_seat_create(dpy, "seat0");
-	wl_signal_add(&seat->events.request_set_cursor, &request_cursor);
-	wl_signal_add(&seat->events.request_set_selection, &request_set_sel);
-	wl_signal_add(&seat->events.request_set_primary_selection, &request_set_psel);
-	wl_signal_add(&seat->events.request_start_drag, &request_start_drag);
-	wl_signal_add(&seat->events.start_drag, &start_drag);
+	wl_list_init(&seats);
+	createseat(dpy);
 
 	output_mgr = wlr_output_manager_v1_create(dpy);
 	wl_signal_add(&output_mgr->events.apply, &output_mgr_apply);
@@ -2717,6 +2811,8 @@ toggleview(const Arg *arg)
 void
 touchdown(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct wlr_touch_down_event *event = data;
 
 	IDLE_NOTIFY_ACTIVITY;
@@ -2744,6 +2840,8 @@ touchdown(struct wl_listener *listener, void *data)
 void
 touchframe(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* This event is forwarded by the cursor when a touch emits an frame
 	 * event. Frame events are sent after regular touch events to group
 	 * multiple events together. For instance, two axis events may happen at the
@@ -2755,7 +2853,10 @@ touchframe(struct wl_listener *listener, void *data)
 }
 
 void
-touchmotion(struct wl_listener *listener, void *data) {
+touchmotion(struct wl_listener *listener, void *data) 
+{
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct wlr_touch_motion_event *event = data;
 	struct wlr_surface *surface;
 	Client *c;
@@ -2777,6 +2878,8 @@ touchmotion(struct wl_listener *listener, void *data) {
 void
 touchup(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	struct wlr_touch_up_event *event = data;
 
 	printf("Touchup [%d]\n", event->touch_id);
@@ -2798,6 +2901,8 @@ unlocksession(struct wl_listener *listener, void *data)
 void
 unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	LayerSurface *layersurface = wl_container_of(listener, layersurface, unmap);
 
 	layersurface->mapped = 0;
@@ -2816,6 +2921,8 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 void
 unmapnotify(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+
 	/* Called when the surface is unmapped, and should no longer be shown. */
 	Client *c = wl_container_of(listener, c, unmap);
 	if (c == grabc) {
@@ -2843,6 +2950,8 @@ unmapnotify(struct wl_listener *listener, void *data)
 void
 updatemons(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	
 	/*
 	 * Called whenever the output layout changes: adding or removing a
 	 * monitor, changing an output's mode or position, etc. This is where
@@ -3130,6 +3239,9 @@ sethints(struct wl_listener *listener, void *data)
 void
 xwaylandready(struct wl_listener *listener, void *data)
 {
+	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+
 	struct wlr_xcursor *xcursor;
 	xcb_connection_t *xc = xcb_connect(xwayland->display_name, NULL);
 	int err = xcb_connection_has_error(xc);
