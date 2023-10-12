@@ -234,6 +234,12 @@ typedef struct {
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
 	struct wl_list keyboards;
+	struct {
+		struct wl_listener touch_down;
+		struct wl_listener touch_frame;
+		struct wl_listener touch_motion;
+		struct wl_listener touch_up;
+	} events;
 } Seat;
 
 Seat* createseat(struct wl_display *dpy);
@@ -422,10 +428,10 @@ static struct wl_listener request_start_drag = {.notify = requeststartdrag};
 static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener session_lock_create_lock = {.notify = locksession};
 static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
-static struct wl_listener touch_down = {.notify = touchdown};
-static struct wl_listener touch_frame = {.notify = touchframe};
-static struct wl_listener touch_motion = {.notify = touchmotion};
-static struct wl_listener touch_up = {.notify = touchup};
+// static struct wl_listener touch_down = {.notify = touchdown};
+// static struct wl_listener touch_frame = {.notify = touchframe};
+// static struct wl_listener touch_motion = {.notify = touchmotion};
+// static struct wl_listener touch_up = {.notify = touchup};
 
 #ifdef XWAYLAND
 static void activatex11(struct wl_listener *listener, void *data);
@@ -587,6 +593,7 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 
 Seat* createseat(struct wl_display *dpy) {
 	Seat *s = ecalloc(1, sizeof(Seat));
+	printf("New seat %lu\n", s);
 	int len = wl_list_length(&seats);
 	char name[7];
 	sprintf(name, "seat%d", len);
@@ -625,10 +632,17 @@ Seat* createseat(struct wl_display *dpy) {
 	wl_signal_add(&cursor->events.button, &cursor_button);
 	wl_signal_add(&cursor->events.axis, &cursor_axis);
 	wl_signal_add(&cursor->events.frame, &cursor_frame);
-	wl_signal_add(&cursor->events.touch_motion, &touch_motion);
-	wl_signal_add(&cursor->events.touch_down, &touch_down);
-	wl_signal_add(&cursor->events.touch_up, &touch_up);
-	wl_signal_add(&cursor->events.touch_frame, &touch_frame);
+
+	
+	s->events.touch_motion.notify = touchmotion;
+	s->events.touch_down.notify = touchdown;
+	s->events.touch_frame.notify = touchframe;
+	s->events.touch_up.notify = touchup;
+
+	wl_signal_add(&cursor->events.touch_motion, &s->events.touch_motion);
+	wl_signal_add(&cursor->events.touch_down, &s->events.touch_down);
+	wl_signal_add(&cursor->events.touch_frame, &s->events.touch_frame);
+	wl_signal_add(&cursor->events.touch_up, &s->events.touch_up);
 
 
 	/*
@@ -639,9 +653,6 @@ Seat* createseat(struct wl_display *dpy) {
 	 */
 	wl_list_init(&s->keyboards);
 	wl_signal_add(&backend->events.new_input, &new_input);
-	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
-	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
-			&new_virtual_keyboard);
 
 	wl_signal_add(&seat->events.request_set_cursor, &request_cursor);
 	wl_signal_add(&seat->events.request_set_selection, &request_set_sel);
@@ -1339,6 +1350,7 @@ void
 createtouch(struct wlr_touch *touch)
 {
 	struct wlr_cursor *cursor = firstseat()->cursor;
+	printf("New touch device with seat %lu\n", firstseat());
 
 	if (wlr_input_device_is_libinput(&touch->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
@@ -1703,10 +1715,10 @@ inputdevice(struct wl_listener *listener, void *data)
 	 * available. */
 	struct wlr_input_device *device = data;
 	uint32_t caps;
-	printf("New input device of type %u\n", device->type);
 
 	Seat *s = NULL;
 	wl_list_for_each(s, &seats, link) break;
+	printf("New input device of type %u, seat %lu\n", device->type, s);
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
@@ -2206,6 +2218,7 @@ pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 void
 printstatus(void)
 {
+	return;
 	Monitor *m = NULL;
 	Client *c;
 	uint32_t occ, urg, sel;
@@ -2661,6 +2674,10 @@ setup(void)
 	wl_list_init(&seats);
 	createseat(dpy);
 
+	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
+	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
+			&new_virtual_keyboard);
+
 	output_mgr = wlr_output_manager_v1_create(dpy);
 	wl_signal_add(&output_mgr->events.apply, &output_mgr_apply);
 	wl_signal_add(&output_mgr->events.test, &output_mgr_test);
@@ -2811,7 +2828,8 @@ toggleview(const Arg *arg)
 void
 touchdown(struct wl_listener *listener, void *data)
 {
-	struct wlr_seat *seat = firstseat()->seat;
+	Seat *s = wl_container_of(listener, s, events.touch_down);
+	struct wlr_seat *seat = s->seat;
 
 	struct wlr_touch_down_event *event = data;
 
@@ -2825,7 +2843,8 @@ touchdown(struct wl_listener *listener, void *data)
 	if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
 			focusclient(c, 1);
 
-	printf("Touchdown [%d] (%lf, %lf) => (%lf, %lf), surface: %lu\n", event->touch_id, event->x, event->y, sx, sy, (long)(void*) surface);
+	printf("Touchdown [%d] (%lf, %lf) => (%lf, %lf), surface: %lu, seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, (long)(void*) surface, seat);
+
 
 	if (!surface) {
 		return;
@@ -2840,14 +2859,16 @@ touchdown(struct wl_listener *listener, void *data)
 void
 touchframe(struct wl_listener *listener, void *data)
 {
-	struct wlr_seat *seat = firstseat()->seat;
+	Seat *s = wl_container_of(listener, s, events.touch_frame);
+	struct wlr_seat *seat = s->seat;
 
 	/* This event is forwarded by the cursor when a touch emits an frame
 	 * event. Frame events are sent after regular touch events to group
 	 * multiple events together. For instance, two axis events may happen at the
 	 * same time, in which case a frame event won't be sent in between. */
 	/* Notify the client with touch focus of the frame event. */
-	printf("Touchframe\n");
+	printf("Touchframe, seat: %lu\n", seat);
+
 
 	wlr_seat_touch_notify_frame(seat);
 }
@@ -2855,7 +2876,8 @@ touchframe(struct wl_listener *listener, void *data)
 void
 touchmotion(struct wl_listener *listener, void *data) 
 {
-	struct wlr_seat *seat = firstseat()->seat;
+	Seat *s = wl_container_of(listener, s, events.touch_motion);
+	struct wlr_seat *seat = s->seat;
 
 	struct wlr_touch_motion_event *event = data;
 	struct wlr_surface *surface;
@@ -2866,8 +2888,7 @@ touchmotion(struct wl_listener *listener, void *data)
 	if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
 			focusclient(c, 1);
 
-	printf("Touchmotion [%d] (%lf, %lf) => (%lf, %lf)\n", event->touch_id, event->x, event->y, sx, sy);
-
+	printf("Touchmotion [%d] (%lf, %lf) => (%lf, %lf), seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, seat);
 
 	wlr_seat_touch_notify_motion(seat, event->time_msec,
 		event->touch_id, sx, sy);
@@ -2878,11 +2899,13 @@ touchmotion(struct wl_listener *listener, void *data)
 void
 touchup(struct wl_listener *listener, void *data)
 {
-	struct wlr_seat *seat = firstseat()->seat;
+	Seat *s = wl_container_of(listener, s, events.touch_up);
+	struct wlr_seat *seat = s->seat;
+
 
 	struct wlr_touch_up_event *event = data;
 
-	printf("Touchup [%d]\n", event->touch_id);
+	printf("Touchup [%d], target seat: %lu, wlrseat: %lu, cursor: %lu, found seat: %lu, found wlrseat: %lu, found cursor: %lu\n", event->touch_id, firstseat(), firstseat()->seat, firstseat()->cursor, s, s->seat, s->cursor);
 
 
 	IDLE_NOTIFY_ACTIVITY;
