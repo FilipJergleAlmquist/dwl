@@ -85,6 +85,14 @@ enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrFS, LyrTop, LyrOverlay, LyrBlock,
 #ifdef XWAYLAND
 enum { NetWMWindowTypeDialog, NetWMWindowTypeSplash, NetWMWindowTypeToolbar,
 	NetWMWindowTypeUtility, NetLast }; /* EWMH atoms */
+
+typedef struct {
+	struct wlr_xwayland *xwayland;
+	struct {
+		struct wl_listener ready;
+		struct wl_listener new_surface;
+	} events;
+} XWayland;
 #endif
 
 typedef union {
@@ -128,6 +136,7 @@ typedef struct {
 	struct wl_listener activate;
 	struct wl_listener configure;
 	struct wl_listener set_hints;
+	XWayland *xwayland;
 #endif
 	unsigned int bw;
 	uint32_t tags;
@@ -432,36 +441,6 @@ static struct wl_listener start_drag = {.notify = startdrag};
 static struct wl_listener session_lock_create_lock = {.notify = locksession};
 static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
 
-
-// static struct wl_listener cursor_axis = {.notify = axisnotify};
-// static struct wl_listener cursor_button = {.notify = buttonpress};
-// static struct wl_listener cursor_frame = {.notify = cursorframe};
-// static struct wl_listener cursor_motion = {.notify = motionrelative};
-// static struct wl_listener cursor_motion_absolute = {.notify = motionabsolute};
-// static struct wl_listener drag_icon_destroy = {.notify = destroydragicon};
-// static struct wl_listener idle_inhibitor_create = {.notify = createidleinhibitor};
-// static struct wl_listener idle_inhibitor_destroy = {.notify = destroyidleinhibitor};
-// static struct wl_listener new_input = {.notify = inputdevice};
-// static struct wl_listener new_virtual_keyboard = {.notify = virtualkeyboard};
-// static struct wl_listener new_virtual_pointer = {.notify = virtualpointer};
-// static struct wl_listener new_xdg_surface = {.notify = createnotify};
-// static struct wl_listener new_xdg_decoration = {.notify = createdecoration};
-// static struct wl_listener new_layer_shell_surface = {.notify = createlayersurface};
-// static struct wl_listener output_mgr_apply = {.notify = outputmgrapply};
-// static struct wl_listener output_mgr_test = {.notify = outputmgrtest};
-// static struct wl_listener request_activate = {.notify = urgent};
-// static struct wl_listener request_cursor = {.notify = setcursor};
-// static struct wl_listener request_set_psel = {.notify = setpsel};
-// static struct wl_listener request_set_sel = {.notify = setsel};
-// static struct wl_listener request_start_drag = {.notify = requeststartdrag};
-// static struct wl_listener start_drag = {.notify = startdrag};
-// static struct wl_listener session_lock_create_lock = {.notify = locksession};
-// static struct wl_listener session_lock_mgr_destroy = {.notify = destroysessionmgr};
-// static struct wl_listener touch_down = {.notify = touchdown};
-// static struct wl_listener touch_frame = {.notify = touchframe};
-// static struct wl_listener touch_motion = {.notify = touchmotion};
-// static struct wl_listener touch_up = {.notify = touchup};
-
 #ifdef XWAYLAND
 static void activatex11(struct wl_listener *listener, void *data);
 static void configurex11(struct wl_listener *listener, void *data);
@@ -471,7 +450,11 @@ static void sethints(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
 static struct wl_listener new_xwayland_surface = {.notify = createnotifyx11};
 static struct wl_listener xwayland_ready = {.notify = xwaylandready};
-static struct wlr_xwayland *xwayland;
+// static struct wlr_xwayland *xwayland;
+// static struct wlr_xwayland *xwayland2;
+static XWayland *xwayland;
+static XWayland *xwayland2;
+// static Atom netatom[NetLast];
 static xcb_atom_t netatom[NetLast];
 #endif
 
@@ -963,7 +946,10 @@ void
 cleanup(void)
 {
 #ifdef XWAYLAND
-	wlr_xwayland_destroy(xwayland);
+	wlr_xwayland_destroy(xwayland->xwayland);
+	wlr_xwayland_destroy(xwayland2->xwayland);
+	free(xwayland);
+	free(xwayland2);
 #endif
 	wl_display_destroy_clients(dpy);
 	if (child_pid > 0) {
@@ -1335,6 +1321,7 @@ createnotify(struct wl_listener *listener, void *data)
 	c->surface.xdg = xdg_surface;
 	c->bw = borderpx;
 	c->serial = generate_serial();
+	c->xwayland = NULL;
 
 	LISTEN(&xdg_surface->events.map, &c->map, mapnotify);
 	LISTEN(&xdg_surface->events.unmap, &c->unmap, unmapnotify);
@@ -1653,9 +1640,12 @@ focusclient(Client *c, int lift, struct wlr_seat *seat)
 		return;
 	}
 
+	if (client_is_x11(c)) {
+		wlr_xwayland_set_seat(c->xwayland->xwayland, seat);
+	}
+
 	/* Change cursor surface */
 	motionnotify(0, seat);
-
 
 	printf("Focusclient, surface: %lu, seat: %lu, x11: %u\n", client_surface(c), seat, client_is_x11(c));
 	/* Have a client, so focus its top-level wlr_surface */
@@ -1742,7 +1732,8 @@ handlesig(int signo)
 		 * XWayland.
 		 */
 		while (!waitid(P_ALL, 0, &in, WEXITED|WNOHANG|WNOWAIT) && in.si_pid
-				&& (!xwayland || in.si_pid != xwayland->server->pid))
+				&& (!xwayland->xwayland || in.si_pid != xwayland->xwayland->server->pid) 
+				&& (!xwayland2->xwayland || in.si_pid != xwayland2->xwayland->server->pid) )
 			waitpid(in.si_pid, NULL, 0);
 #else
 		while (waitpid(-1, NULL, WNOHANG) > 0);
@@ -2751,12 +2742,24 @@ setup(void)
 	 * Initialise the XWayland X server.
 	 * It will be started when the first X client is started.
 	 */
-	xwayland = wlr_xwayland_create(dpy, compositor, 1);
-	if (xwayland) {
-		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
-		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
+	xwayland = ecalloc(1, sizeof(XWayland));
+	xwayland2 = ecalloc(1, sizeof(XWayland));
+	xwayland->xwayland = wlr_xwayland_create(dpy, compositor, 1);
+	xwayland2->xwayland = wlr_xwayland_create(dpy, compositor, 1);
+	printf("Created xwayland %s and %s\n", xwayland->xwayland->display_name, xwayland2->xwayland->display_name);
+	if (xwayland->xwayland) {
+		xwayland->events.ready.notify = xwaylandready;
+		xwayland->events.new_surface.notify = createnotifyx11;
+		wl_signal_add(&xwayland->xwayland->events.ready, &xwayland->events.ready);
+		wl_signal_add(&xwayland->xwayland->events.new_surface, &xwayland->events.new_surface);
 
-		setenv("DISPLAY", xwayland->display_name, 1);
+		xwayland2->events.ready.notify = xwaylandready;
+		xwayland2->events.new_surface.notify = createnotifyx11;
+		wl_signal_add(&xwayland2->xwayland->events.ready, &xwayland2->events.ready);
+		wl_signal_add(&xwayland2->xwayland->events.new_surface, &xwayland2->events.new_surface);
+
+
+		setenv("DISPLAY", xwayland->xwayland->display_name, 1);
 	} else {
 		fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
 	}
@@ -3280,6 +3283,7 @@ createnotifyx11(struct wl_listener *listener, void *data)
 {
 	struct wlr_xwayland_surface *xsurface = data;
 	Client *c;
+	XWayland *xwayland = wl_container_of(listener, xwayland, events.new_surface); 
 
 	/* Allocate a Client for this surface */
 	c = xsurface->data = ecalloc(1, sizeof(*c));
@@ -3287,6 +3291,7 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	c->type = xsurface->override_redirect ? X11Unmanaged : X11Managed;
 	c->bw = borderpx;
 	c->serial = generate_serial();
+	c->xwayland = xwayland;
 
 	/* Listen to the various events it can emit */
 	LISTEN(&xsurface->events.map, &c->map, mapnotify);
@@ -3332,9 +3337,10 @@ xwaylandready(struct wl_listener *listener, void *data)
 {
 	struct wlr_seat *seat = firstseat()->seat;
 	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+	XWayland *xwayland = wl_container_of(listener, xwayland, events.ready);
 
 	struct wlr_xcursor *xcursor;
-	xcb_connection_t *xc = xcb_connect(xwayland->display_name, NULL);
+	xcb_connection_t *xc = xcb_connect(xwayland->xwayland->display_name, NULL);
 	int err = xcb_connection_has_error(xc);
 	if (err) {
 		fprintf(stderr, "xcb_connect to X server failed with code %d\n. Continuing with degraded functionality.\n", err);
@@ -3349,11 +3355,11 @@ xwaylandready(struct wl_listener *listener, void *data)
 	netatom[NetWMWindowTypeUtility] = getatom(xc, "_NET_WM_WINDOW_TYPE_UTILITY");
 
 	/* assign the one and only seat */
-	wlr_xwayland_set_seat(xwayland, seat);
+	wlr_xwayland_set_seat(xwayland->xwayland, seat);
 
 	/* Set the default XWayland cursor to match the rest of dwl. */
 	if ((xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "left_ptr", 1)))
-		wlr_xwayland_set_cursor(xwayland,
+		wlr_xwayland_set_cursor(xwayland->xwayland,
 				xcursor->images[0]->buffer, xcursor->images[0]->width * 4,
 				xcursor->images[0]->width, xcursor->images[0]->height,
 				xcursor->images[0]->hotspot_x, xcursor->images[0]->hotspot_y);
