@@ -84,7 +84,7 @@ enum { XDGShell, LayerShell, X11Managed, X11Unmanaged }; /* client types */
 enum { LyrBg, LyrBottom, LyrTile, LyrFloat, LyrFS, LyrTop, LyrOverlay, LyrBlock, NUM_LAYERS }; /* scene layers */
 #ifdef XWAYLAND
 enum { NetWMWindowTypeDialog, NetWMWindowTypeSplash, NetWMWindowTypeToolbar,
-	NetWMWindowTypeUtility, NetLast }; /* EWMH atoms */
+	NetWMWindowTypeUtility, NetWMPid, NetLast }; /* EWMH atoms */
 
 typedef struct {
 	struct wlr_xwayland *xwayland;
@@ -143,6 +143,7 @@ typedef struct {
 	int isfloating, isurgent, isfullscreen;
 	uint32_t resize; /* configure serial of a pending resize */
 	uint32_t serial;
+	const char* display_name;
 } Client;
 
 typedef struct {
@@ -448,13 +449,10 @@ static void createnotifyx11(struct wl_listener *listener, void *data);
 static xcb_atom_t getatom(xcb_connection_t *xc, const char *name);
 static void sethints(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
-static struct wl_listener new_xwayland_surface = {.notify = createnotifyx11};
-static struct wl_listener xwayland_ready = {.notify = xwaylandready};
-// static struct wlr_xwayland *xwayland;
-// static struct wlr_xwayland *xwayland2;
-static XWayland *xwayland;
-static XWayland *xwayland2;
-// static Atom netatom[NetLast];
+
+
+#define MAX_XWAYLAND_INSTANCES 10 /* maximum number of instances of xwayland, should be at least the number of users to work around X11 multiseat limitation */
+static XWayland xwaylands[MAX_XWAYLAND_INSTANCES];
 static xcb_atom_t netatom[NetLast];
 #endif
 
@@ -603,13 +601,13 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 	return manager;
 }
 
-Seat* createseat(struct wl_display *dpy) {
+Seat* createseat(struct wl_display *display) {
 	Seat *s = ecalloc(1, sizeof(Seat));
-	printf("New seat %lu\n", s);
+	printf("New seat %lu\n", (uint64_t)s);
 	int len = wl_list_length(&seats);
 	char name[7];
 	sprintf(name, "seat%d", len);
-	struct wlr_seat *seat = wlr_seat_create(dpy, name);
+	struct wlr_seat *seat = wlr_seat_create(display, name);
 	s->seat = seat;
 	wl_list_insert(&seats, &s->link);
 	/*
@@ -640,28 +638,15 @@ Seat* createseat(struct wl_display *dpy) {
 	 * And more comments are sprinkled throughout the notify functions above.
 	 */
 
-	s->events.cursor_axis.notify = axisnotify;
-	s->events.cursor_button.notify = buttonpress;
-	s->events.cursor_frame.notify = cursorframe;
-	s->events.cursor_motion.notify = motionrelative;
-	s->events.cursor_motion_absolute.notify = motionabsolute;
-
-	wl_signal_add(&cursor->events.axis, &s->events.cursor_axis);
-	wl_signal_add(&cursor->events.button, &s->events.cursor_button);
-	wl_signal_add(&cursor->events.frame, &s->events.cursor_frame);
-	wl_signal_add(&cursor->events.motion, &s->events.cursor_motion);
-	wl_signal_add(&cursor->events.motion_absolute, &s->events.cursor_motion_absolute);
-
-	
-	s->events.touch_motion.notify = touchmotion;
-	s->events.touch_down.notify = touchdown;
-	s->events.touch_frame.notify = touchframe;
-	s->events.touch_up.notify = touchup;
-
-	wl_signal_add(&cursor->events.touch_motion, &s->events.touch_motion);
-	wl_signal_add(&cursor->events.touch_down, &s->events.touch_down);
-	wl_signal_add(&cursor->events.touch_frame, &s->events.touch_frame);
-	wl_signal_add(&cursor->events.touch_up, &s->events.touch_up);
+	LISTEN(&cursor->events.axis, &s->events.cursor_axis, axisnotify);
+	LISTEN(&cursor->events.button, &s->events.cursor_button, buttonpress);
+	LISTEN(&cursor->events.frame, &s->events.cursor_frame, cursorframe);
+	LISTEN(&cursor->events.motion, &s->events.cursor_motion, motionrelative);
+	LISTEN(&cursor->events.motion_absolute, &s->events.cursor_motion_absolute, motionabsolute);
+	LISTEN(&cursor->events.touch_motion, &s->events.touch_motion, touchmotion);
+	LISTEN(&cursor->events.touch_down, &s->events.touch_down, touchdown);
+	LISTEN(&cursor->events.touch_frame, &s->events.touch_frame, touchframe);
+	LISTEN(&cursor->events.touch_up, &s->events.touch_up, touchup);
 
 
 	/*
@@ -678,10 +663,10 @@ Seat* createseat(struct wl_display *dpy) {
 	s->events.request_cursor.notify = setcursor;
 	s->events.request_start_drag.notify = requeststartdrag;
 
-	wl_signal_add(&seat->events.request_set_cursor, &s->events.request_cursor);
-	wl_signal_add(&seat->events.request_set_selection, &s->events.request_set_sel);
-	wl_signal_add(&seat->events.request_set_primary_selection, &s->events.request_set_psel);
-	wl_signal_add(&seat->events.request_start_drag, &s->events.request_start_drag);
+	LISTEN(&seat->events.request_set_cursor, &s->events.request_cursor, setcursor);
+	LISTEN(&seat->events.request_set_selection, &s->events.request_set_sel, setsel);
+	LISTEN(&seat->events.request_set_primary_selection, &s->events.request_set_psel, setpsel);
+	LISTEN(&seat->events.request_start_drag, &s->events.request_start_drag, requeststartdrag);
 	wl_signal_add(&seat->events.start_drag, &start_drag);
 
 	return s;
@@ -946,10 +931,9 @@ void
 cleanup(void)
 {
 #ifdef XWAYLAND
-	wlr_xwayland_destroy(xwayland->xwayland);
-	wlr_xwayland_destroy(xwayland2->xwayland);
-	free(xwayland);
-	free(xwayland2);
+	for (int i = 0; i < MAX_XWAYLAND_INSTANCES; ++i) {
+		wlr_xwayland_destroy(xwaylands[i].xwayland);
+	}
 #endif
 	wl_display_destroy_clients(dpy);
 	if (child_pid > 0) {
@@ -965,7 +949,7 @@ cleanup(void)
 		wlr_xcursor_manager_destroy(s->cursor_mgr);
 		wlr_cursor_destroy(s->cursor);
 		wlr_seat_destroy(s->seat);
-		free(s);
+		// free(s);
 	}
 	wlr_output_layout_destroy(output_layout);
 	wl_display_destroy(dpy);
@@ -1125,7 +1109,7 @@ createkeyboard(struct wlr_keyboard *keyboard)
 
 	/* And add the keyboard to our list of keyboards */
 	wl_list_insert(&keyboards, &kb->link);
-	printf("Added keyboard %lu to seat %lu\n", kb, seat);
+	printf("Added keyboard %lu to seat %lu\n", (uint64_t)kb, (uint64_t)seat);
 }
 
 void
@@ -1322,6 +1306,7 @@ createnotify(struct wl_listener *listener, void *data)
 	c->bw = borderpx;
 	c->serial = generate_serial();
 	c->xwayland = NULL;
+	c->display_name = NULL;
 
 	LISTEN(&xdg_surface->events.map, &c->map, mapnotify);
 	LISTEN(&xdg_surface->events.unmap, &c->unmap, unmapnotify);
@@ -1383,7 +1368,7 @@ void
 createtouch(struct wlr_touch *touch)
 {
 	struct wlr_cursor *cursor = firstseat()->cursor;
-	printf("New touch device with seat %lu\n", firstseat());
+	printf("New touch device with seat %lu\n", (uint64_t)firstseat());
 
 	if (wlr_input_device_is_libinput(&touch->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
@@ -1647,7 +1632,7 @@ focusclient(Client *c, int lift, struct wlr_seat *seat)
 	/* Change cursor surface */
 	motionnotify(0, seat);
 
-	printf("Focusclient, surface: %lu, seat: %lu, x11: %u\n", client_surface(c), seat, client_is_x11(c));
+	printf("Focusclient, surface: %lu, seat: %lu, x11: %u\n", (uint64_t)client_surface(c), (uint64_t)seat, client_is_x11(c));
 	/* Have a client, so focus its top-level wlr_surface */
 	client_notify_enter(client_surface(c), seat);
 
@@ -1731,10 +1716,14 @@ handlesig(int signo)
 		 * use WNOWAIT to keep the child waitable until we know it's not
 		 * XWayland.
 		 */
-		while (!waitid(P_ALL, 0, &in, WEXITED|WNOHANG|WNOWAIT) && in.si_pid
-				&& (!xwayland->xwayland || in.si_pid != xwayland->xwayland->server->pid) 
-				&& (!xwayland2->xwayland || in.si_pid != xwayland2->xwayland->server->pid) )
+		while (!waitid(P_ALL, 0, &in, WEXITED|WNOHANG|WNOWAIT) && in.si_pid) {
+			bool waiting = true;
+			for (int i = 0; i < MAX_XWAYLAND_INSTANCES; ++i)
+				waiting = waiting && (!xwaylands[i].xwayland || in.si_pid != xwaylands[i].xwayland->server->pid);
+			if (!waiting)
+				break;
 			waitpid(in.si_pid, NULL, 0);
+		}
 #else
 		while (waitpid(-1, NULL, WNOHANG) > 0);
 #endif
@@ -1762,7 +1751,7 @@ inputdevice(struct wl_listener *listener, void *data)
 
 	Seat *s = NULL;
 	wl_list_for_each(s, &seats, link) break;
-	printf("New input device of type %u, seat %lu\n", device->type, s);
+	printf("New input device of type %u, seat %lu\n", device->type, (uint64_t)s);
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
@@ -2060,7 +2049,6 @@ motionnotify(uint32_t time, struct wlr_seat *seat)
 {
 	Seat *s = wl_container_of(seat, s, seat);
 	struct wlr_cursor *cursor = s->cursor;
-	struct wlr_xcursor_manager *cursor_mgr = s->cursor_mgr;
 
 	double sx = 0, sy = 0;
 	Client *c = NULL, *w = NULL;
@@ -2409,7 +2397,6 @@ run(char *startup_cmd)
 	}
 	printstatus();
 
-	struct wlr_seat *seat = firstseat()->seat;
 	struct wlr_cursor *cursor = firstseat()->cursor;
 	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
 	/* At this point the outputs are initialized, choose initial selmon based on
@@ -2475,10 +2462,10 @@ setfullscreen(Client *c, int fullscreen)
 		return;
 	c->bw = fullscreen ? 0 : borderpx;
 	client_set_fullscreen(c, fullscreen);
-	wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
-			? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
 
 	if (fullscreen_resize) {
+		wlr_scene_node_reparent(&c->scene->node, layers[c->isfullscreen
+				? LyrFS : c->isfloating ? LyrFloat : LyrTile]);
 		if (fullscreen) {
 			c->prev = c->geom;
 			resize(c, c->mon->m, 0);
@@ -2487,8 +2474,12 @@ setfullscreen(Client *c, int fullscreen)
 			* client positions are set by the user and cannot be recalculated */
 			resize(c, c->prev, 0);
 		}
+		arrange(c->mon);
+	} else {
+		if (client_is_x11(c)) {
+			resize(c, c->geom, 0);
+		}
 	}
-	arrange(c->mon);
 	printstatus();
 }
 
@@ -2742,26 +2733,19 @@ setup(void)
 	 * Initialise the XWayland X server.
 	 * It will be started when the first X client is started.
 	 */
-	xwayland = ecalloc(1, sizeof(XWayland));
-	xwayland2 = ecalloc(1, sizeof(XWayland));
-	xwayland->xwayland = wlr_xwayland_create(dpy, compositor, 1);
-	xwayland2->xwayland = wlr_xwayland_create(dpy, compositor, 1);
-	printf("Created xwayland %s and %s\n", xwayland->xwayland->display_name, xwayland2->xwayland->display_name);
-	if (xwayland->xwayland) {
-		xwayland->events.ready.notify = xwaylandready;
-		xwayland->events.new_surface.notify = createnotifyx11;
-		wl_signal_add(&xwayland->xwayland->events.ready, &xwayland->events.ready);
-		wl_signal_add(&xwayland->xwayland->events.new_surface, &xwayland->events.new_surface);
+	for (i = 0; i < MAX_XWAYLAND_INSTANCES; ++i) {
+		xwaylands[i].xwayland = wlr_xwayland_create(dpy, compositor, 1);
+		printf("Created xwayland %s\n", xwaylands[i].xwayland->display_name);
+		if (xwaylands[i].xwayland) {
+			xwaylands[i].events.ready.notify = xwaylandready;
+			xwaylands[i].events.new_surface.notify = createnotifyx11;
+			wl_signal_add(&xwaylands[i].xwayland->events.ready, &xwaylands[i].events.ready);
+			wl_signal_add(&xwaylands[i].xwayland->events.new_surface, &xwaylands[i].events.new_surface);
 
-		xwayland2->events.ready.notify = xwaylandready;
-		xwayland2->events.new_surface.notify = createnotifyx11;
-		wl_signal_add(&xwayland2->xwayland->events.ready, &xwayland2->events.ready);
-		wl_signal_add(&xwayland2->xwayland->events.new_surface, &xwayland2->events.new_surface);
-
-
-		setenv("DISPLAY", xwayland->xwayland->display_name, 1);
-	} else {
-		fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
+			setenv("DISPLAY", xwaylands[i].xwayland->display_name, 1);
+		} else {
+			fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
+		}
 	}
 #endif
 }
@@ -2911,7 +2895,7 @@ touchdown(struct wl_listener *listener, void *data)
 	if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
 			focusclient(c, 1, seat);
 
-	printf("Touchdown [%d] (%lf, %lf) => (%lf, %lf), surface: %lu, seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, (long)(void*) surface, seat);
+	printf("Touchdown [%d] (%lf, %lf) => (%lf, %lf), surface: %lu, seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, (uint64_t)surface, (uint64_t)seat);
 
 
 	if (!surface) {
@@ -2935,7 +2919,7 @@ touchframe(struct wl_listener *listener, void *data)
 	 * multiple events together. For instance, two axis events may happen at the
 	 * same time, in which case a frame event won't be sent in between. */
 	/* Notify the client with touch focus of the frame event. */
-	printf("Touchframe, seat: %lu\n", seat);
+	printf("Touchframe, seat: %lu\n", (uint64_t)seat);
 
 
 	wlr_seat_touch_notify_frame(seat);
@@ -2956,7 +2940,7 @@ touchmotion(struct wl_listener *listener, void *data)
 	// if (c && (!client_is_unmanaged(c) || client_wants_focus(c)))
 	// 		focusclient(c, 1, seat);
 
-	printf("Touchmotion [%d] (%lf, %lf) => (%lf, %lf), seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, seat);
+	printf("Touchmotion [%d] (%lf, %lf) => (%lf, %lf), seat: %lu\n", event->touch_id, event->x, event->y, sx, sy, (uint64_t)seat);
 
 	wlr_seat_touch_notify_motion(seat, event->time_msec,
 		event->touch_id, sx, sy);
@@ -2972,7 +2956,8 @@ touchup(struct wl_listener *listener, void *data)
 
 	struct wlr_touch_up_event *event = data;
 
-	printf("Touchup [%d], target seat: %lu, wlrseat: %lu, cursor: %lu, found seat: %lu, found wlrseat: %lu, found cursor: %lu\n", event->touch_id, firstseat(), firstseat()->seat, firstseat()->cursor, s, s->seat, s->cursor);
+	printf("Touchup [%d], target seat: %lu, wlrseat: %lu, cursor: %lu, found seat: %lu, found wlrseat: %lu, found cursor: %lu\n",
+			event->touch_id, (uint64_t)firstseat(), (uint64_t)firstseat()->seat, (uint64_t)firstseat()->cursor, (uint64_t)s, (uint64_t)s->seat, (uint64_t)s->cursor);
 
 
 	IDLE_NOTIFY_ACTIVITY;
@@ -3292,6 +3277,7 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	c->bw = borderpx;
 	c->serial = generate_serial();
 	c->xwayland = xwayland;
+	c->display_name = xwayland->xwayland->display_name;
 
 	/* Listen to the various events it can emit */
 	LISTEN(&xsurface->events.map, &c->map, mapnotify);
@@ -3353,6 +3339,7 @@ xwaylandready(struct wl_listener *listener, void *data)
 	netatom[NetWMWindowTypeSplash] = getatom(xc, "_NET_WM_WINDOW_TYPE_SPLASH");
 	netatom[NetWMWindowTypeToolbar] = getatom(xc, "_NET_WM_WINDOW_TYPE_TOOLBAR");
 	netatom[NetWMWindowTypeUtility] = getatom(xc, "_NET_WM_WINDOW_TYPE_UTILITY");
+	netatom[NetWMPid] = getatom(xc, "_NET_WM_PID");
 
 	/* assign the one and only seat */
 	wlr_xwayland_set_seat(xwayland->xwayland, seat);

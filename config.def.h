@@ -1,3 +1,9 @@
+/* mode */
+static const int mode_width              = 10800;  /* output width */
+static const int mode_height             = 2400;   /* output height */
+static const float mode_refresh          = 240.0;  /* output refresh rate */
+static const bool fullscreen_resize      = false;  /* resize window when toggling fullscreen */
+
 /* Taken from https://github.com/djpohly/dwl/issues/466 */
 #define COLOR(hex)    { ((hex >> 24) & 0xFF) / 255.0f, \
                         ((hex >> 16) & 0xFF) / 255.0f, \
@@ -42,7 +48,7 @@ static const MonitorRule monrules[] = {
 	{ "eDP-1",    0.5,  1,      2,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
 	*/
 	/* defaults */
-	{ NULL,       0.55, 1,      1,    &layouts[0], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
+	{ NULL,       0.55, 1,      1,    &layouts[1], WL_OUTPUT_TRANSFORM_NORMAL,   -1,  -1 },
 };
 
 /* keyboard */
