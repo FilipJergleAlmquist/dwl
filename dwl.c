@@ -4,7 +4,7 @@
  */
 #include <assert.h>
 #include <compositor-v1.h>
-#include <compositor-unstable-v1-protocol.h>
+#include "compositor-unstable-v1-protocol.h"
 #include <getopt.h>
 #include <libinput.h>
 #include <limits.h>

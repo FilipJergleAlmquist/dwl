@@ -224,7 +224,9 @@ client_get_pid(Client *c) {
 		xcb_get_property_cookie_t cookie = xcb_get_property(xc, 0, xwayland_surf->window_id, netatom[NetWMPid], XCB_ATOM_CARDINAL, 0, 1);
 		xcb_get_property_reply_t *reply = xcb_get_property_reply(xc, cookie, NULL);
 		uint32_t *upid = (uint32_t*)xcb_get_property_value(reply);
-		xwayland_surf->pid = *upid;
+		if (upid) {
+			xwayland_surf->pid = *upid;
+		}
 		xcb_disconnect(xc);
 		return xwayland_surf->pid;
 	}
