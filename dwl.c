@@ -472,12 +472,7 @@ struct compositor_manager_v1 {
 
 struct compositor_v1 {
 	struct wl_resource *resource;
-	struct compositor_manager_v1 *manager;
 };
-
-
-static struct compositor_manager_v1 *manager_from_resource(
-		struct wl_resource *resource);
 
 static void compositor_handle_destroy(struct wl_client *client,
 		struct wl_resource *resource) {
@@ -492,33 +487,18 @@ static const struct zcompositor_v1_interface compositor_impl = {
 };
 
 void get_window_info(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id) {
-	struct compositor_manager_v1 *manager =
-		manager_from_resource(manager_resource);
-
-	struct compositor_v1 *comp =
-		calloc(1, sizeof(struct compositor_v1));
-	if (comp == NULL) {
-		wl_resource_post_no_memory(manager_resource);
-		return;
-	}
-	comp->manager = manager;
-
 	uint32_t version = wl_resource_get_version(manager_resource);
-	comp->resource = wl_resource_create(client,
+	struct wl_resource *resource = wl_resource_create(client,
 		&zcompositor_v1_interface, version, id);
-	if (comp->resource == NULL) {
-		wl_client_post_no_memory(client);
-		free(comp);
-		return;
-	}
-	wl_resource_set_implementation(comp->resource, &compositor_impl, comp,
+
+	wl_resource_set_implementation(resource, &compositor_impl, NULL,
 		compositor_handle_resource_destroy);
 
 	Client *c;
 	wl_list_for_each(c, &fstack, flink)
-		zcompositor_v1_send_window_info(comp->resource, c->serial, client_get_pid(c), client_get_title(c));
+		zcompositor_v1_send_window_info(resource, c->serial, client_get_pid(c), client_get_title(c));
 
-	zcompositor_v1_send_done(comp->resource);
+	zcompositor_v1_send_done(resource);
 }
 
 void set_window_area(struct wl_client *client, struct wl_resource *manager_resource,
@@ -553,13 +533,6 @@ static const struct zcompositor_manager_v1_interface manager_impl = {
 	.set_window_area = set_window_area,
 	.destroy = manager_handle_destroy,
 };
-
-static struct compositor_manager_v1 *manager_from_resource(
-		struct wl_resource *resource) {
-	assert(wl_resource_instance_of(resource,
-		&zcompositor_manager_v1_interface, &manager_impl));
-	return wl_resource_get_user_data(resource);
-}
 
 static void manager_bind(struct wl_client *client, void *data, uint32_t version,
 		uint32_t id) {
