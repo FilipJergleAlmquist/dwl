@@ -1,6 +1,6 @@
 /* mode */
-static const int mode_width              = 10800;  /* output width */
-static const int mode_height             = 2400;   /* output height */
+static const int mode_width              = 1080;  /* output width */
+static const int mode_height             = 15120;   /* output height */
 static const float mode_refresh          = 240.0;  /* output refresh rate */
 static const bool fullscreen_resize      = false;  /* resize window when toggling fullscreen */
 
@@ -12,7 +12,7 @@ static const bool fullscreen_resize      = false;  /* resize window when togglin
 /* appearance */
 static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;  /* 1 means idle inhibitors will disable idle tracking even if it's surface isn't visible  */
-static const unsigned int borderpx         = 1;  /* border pixel of windows */
+static const unsigned int borderpx         = 0;  /* border pixel of windows */
 static const float bordercolor[]           = COLOR(0x444444ff);
 static const float focuscolor[]            = COLOR(0x005577ff);
 static const float urgentcolor[]           = COLOR(0xff0000ff);
