@@ -2499,9 +2499,9 @@ setcursor(struct wl_listener *listener, void *data)
 	 * use the provided surface as the cursor image. It will set the
 	 * hardware cursor on the output that it's currently on and continue to
 	 * do so as the cursor moves between outputs. */
-	if (event->seat_client == seat->pointer_state.focused_client)
-		wlr_cursor_set_surface(cursor, event->surface,
-				event->hotspot_x, event->hotspot_y);
+	// if (event->seat_client == seat->pointer_state.focused_client)
+	// 	wlr_cursor_set_surface(cursor, event->surface,
+	// 			event->hotspot_x, event->hotspot_y);
 }
 
 void
