@@ -1,4 +1,5 @@
 #define XWAYLAND
+#define MAX_NUM_USERS 10 
 /*
  * See LICENSE file for copyright and license details.
  */
@@ -28,7 +29,6 @@
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 // #include <wlr/types/wlr_gamma_control_v1.h>
-#include <wlr/types/wlr_idle.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_input_device.h>
@@ -244,7 +244,7 @@ typedef struct {
 } SessionLock;
 
 typedef struct {
-	struct wl_list link;
+	bool in_use;
 	struct wlr_seat *seat;
 	struct wlr_cursor *cursor;
 	struct wlr_xcursor_manager *cursor_mgr;
@@ -268,8 +268,8 @@ typedef struct {
 	} events;
 } Seat;
 
-Seat* createseat(struct wl_display *dpy);
-Seat* firstseat(void);
+void seatinit(struct wl_display *dpy, int i);
+Seat* currentseat(void);
 
 /* function declarations */
 static void applybounds(Client *c, struct wlr_box *bbox);
@@ -416,7 +416,8 @@ static struct wlr_session_lock_manager_v1 *session_lock_mgr;
 static struct wlr_scene_rect *locked_bg;
 static struct wlr_session_lock_v1 *cur_lock;
 
-static struct wl_list seats;
+static int seat_index = 0;
+static Seat seats[MAX_NUM_USERS];
 // static struct wl_list keyboards;
 static unsigned int cursor_mode;
 static Client *grabc;
@@ -456,9 +457,8 @@ static xcb_atom_t getatom(xcb_connection_t *xc, const char *name);
 static void sethints(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
 
-
-#define MAX_XWAYLAND_INSTANCES 1 /* maximum number of instances of xwayland, should be at least the number of users to work around X11 multiseat limitation */
-static XWayland xwaylands[MAX_XWAYLAND_INSTANCES];
+/* should be at least the same number of xwayland instances as users to work around X11 multiseat limitation */
+static XWayland xwaylands[MAX_NUM_USERS];
 static xcb_atom_t netatom[NetLast];
 #endif
 
@@ -580,15 +580,13 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 	return manager;
 }
 
-Seat* createseat(struct wl_display *display) {
-	Seat *s = ecalloc(1, sizeof(Seat));
+void seatinit(struct wl_display *display, int i) {
+	Seat *s = &seats[i];
 	printf("New seat %lu\n", (uint64_t)s);
-	int len = wl_list_length(&seats);
 	char name[7];
-	sprintf(name, "seat%d", len);
+	sprintf(name, "seat%d", i);
 	struct wlr_seat *seat = wlr_seat_create(display, name);
 	s->seat = seat;
-	wl_list_insert(&seats, &s->link);
 	/*
 	 * Creates a cursor, which is a wlroots utility for tracking the cursor
 	 * image shown on screen.
@@ -647,14 +645,10 @@ Seat* createseat(struct wl_display *display) {
 	LISTEN(&seat->events.request_set_primary_selection, &s->events.request_set_psel, setpsel);
 	LISTEN(&seat->events.request_start_drag, &s->events.request_start_drag, requeststartdrag);
 	wl_signal_add(&seat->events.start_drag, &start_drag);
-
-	return s;
 }
 
-Seat* firstseat(void) {
-	Seat *s;
-	wl_list_for_each(s, &seats, link) break;
-	return s;
+Seat* currentseat(void) {
+	return &seats[seat_index];
 }
 
 /* function implementations */
@@ -720,7 +714,7 @@ arrange(Monitor *m)
 
 	if (m->lt[m->sellt]->arrange)
 		m->lt[m->sellt]->arrange(m);
-	motionnotify(0, firstseat()->seat);
+	motionnotify(0, currentseat()->seat);
 	checkidleinhibitor(NULL);
 }
 
@@ -749,7 +743,7 @@ void
 arrangelayers(Monitor *m)
 {
 	printf("[Arrangelayers]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 	int i;
 	struct wlr_box usable_area = m->m;
 	uint32_t layers_above_shell[] = {
@@ -899,8 +893,13 @@ checkidleinhibitor(struct wlr_surface *exclude)
 void
 cleanup(void)
 {
+	for (int i = 0; i < MAX_NUM_USERS; ++i) {
+		Seat *s = &seats[i];
+		wlr_xcursor_manager_destroy(s->cursor_mgr);
+		wlr_cursor_destroy(s->cursor);
+		wlr_seat_destroy(s->seat);
+
 #ifdef XWAYLAND
-	for (int i = 0; i < MAX_XWAYLAND_INSTANCES; ++i) {
 		wlr_xwayland_destroy(xwaylands[i].xwayland);
 		xwaylands[i].xwayland = NULL;
 	}
@@ -913,13 +912,6 @@ cleanup(void)
 	// wlr_backend_destroy(backend);
 	// wlr_renderer_destroy(drw);
 	// wlr_allocator_destroy(alloc);
-	Seat *s;
-	wl_list_for_each(s, &seats, link) {
-		wlr_xcursor_manager_destroy(s->cursor_mgr);
-		// wlr_cursor_destroy(s->cursor);
-		// wlr_seat_destroy(s->seat);
-		// free(s);
-	}
 	wlr_output_layout_destroy(output_layout);
 	wl_display_destroy(dpy);
 	/* Destroy after the wayland display (when the monitors are already destroyed)
@@ -986,7 +978,7 @@ closemon(Monitor *m)
 		if (c->mon == m)
 			setmon(c, selmon, c->tags);
 	}
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 	printstatus();
 }
 
@@ -1053,8 +1045,8 @@ createidleinhibitor(struct wl_listener *listener, void *data)
 void
 createkeyboard(struct wlr_keyboard *keyboard)
 {
-	struct wlr_seat *seat = firstseat()->seat;
-	struct wl_list keyboards = firstseat()->keyboards;
+	struct wlr_seat *seat = currentseat()->seat;
+	struct wl_list keyboards = currentseat()->keyboards;
 
 	struct xkb_context *context;
 	struct xkb_keymap *keymap;
@@ -1084,7 +1076,7 @@ createkeyboard(struct wlr_keyboard *keyboard)
 
 	/* And add the keyboard to our list of keyboards */
 	wl_list_insert(&keyboards, &kb->link);
-	printf("Added keyboard %lu to seat %lu\n", (uint64_t)kb, (uint64_t)seat);
+	printf("Added keyboard %lu to seat %lu\n", (uint64_t)kb, (uint64_t)currentseat());
 }
 
 void
@@ -1139,7 +1131,7 @@ void
 createlocksurface(struct wl_listener *listener, void *data)
 {
 	printf("[Createlocksurface]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 
 	SessionLock *lock = wl_container_of(listener, lock, new_surface);
 	struct wlr_session_lock_surface_v1 *lock_surface = data;
@@ -1300,7 +1292,7 @@ createnotify(struct wl_listener *listener, void *data)
 void
 createpointer(struct wlr_pointer *pointer)
 {
-	struct wlr_cursor *cursor = firstseat()->cursor;
+	struct wlr_cursor *cursor = currentseat()->cursor;
 
 	if (wlr_input_device_is_libinput(&pointer->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
@@ -1346,8 +1338,8 @@ createpointer(struct wlr_pointer *pointer)
 void
 createtouch(struct wlr_touch *touch)
 {
-	struct wlr_cursor *cursor = firstseat()->cursor;
-	printf("New touch device with seat %lu\n", (uint64_t)firstseat());
+	struct wlr_cursor *cursor = currentseat()->cursor;
+	printf("New touch device with seat %lu\n", (uint64_t)currentseat());
 
 	if (wlr_input_device_is_libinput(&touch->base)) {
 		struct libinput_device *libinput_device = (struct libinput_device*)
@@ -1408,7 +1400,7 @@ void
 destroydragicon(struct wl_listener *listener, void *data)
 {
 	printf("[Destroydragicon]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 	// struct wlr_drag_icon *icon = data;
 	// wlr_scene_node_destroy(icon->data);
 	/* Focus enter isn't sent during drag, so refocus the focused node. */
@@ -1442,7 +1434,7 @@ void
 destroylock(SessionLock *lock, int unlock)
 {
 	printf("[Destroylock]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 
 	wlr_seat_keyboard_notify_clear_focus(seat);
 	if ((locked = !unlock))
@@ -1467,7 +1459,7 @@ void
 destroylocksurface(struct wl_listener *listener, void *data)
 {
 	printf("[Destroylocksurface]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 
 	Monitor *m = wl_container_of(listener, m, destroy_lock_surface);
 	struct wlr_session_lock_surface_v1 *surface, *lock_surface = m->lock_surface;
@@ -1633,7 +1625,7 @@ focusmon(const Arg *arg)
 		do /* don't switch to disabled mons */
 			selmon = dirtomon(arg->i);
 		while (!selmon->wlr_output->enabled && i++ < nmons);
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 }
 
 void
@@ -1660,7 +1652,7 @@ focusstack(const Arg *arg)
 		}
 	}
 	/* If only one client is visible on selmon, then c == sel */
-	focusclient(c, 1, firstseat()->seat);
+	focusclient(c, 1, currentseat()->seat);
 }
 
 /* We probably should change the name of this, it sounds like
@@ -1706,7 +1698,7 @@ handlesig(int signo)
 		// 	waitpid(in.si_pid, NULL, 0);
 		while (!waitid(P_ALL, 0, &in, WEXITED|WNOHANG|WNOWAIT) && in.si_pid) {
 			bool waiting = true;
-			for (int i = 0; i < MAX_XWAYLAND_INSTANCES; ++i)
+			for (int i = 0; i < MAX_NUM_USERS; ++i)
 				waiting = waiting && (!xwaylands[i].xwayland || in.si_pid != xwaylands[i].xwayland->server->pid);
 			if (!waiting)
 				break;
@@ -1729,6 +1721,10 @@ incnmaster(const Arg *arg)
 	arrange(selmon);
 }
 
+/*
+*	TODO: Add a protocol that tells the compositor which seat to use for 
+*		  the next input devices and when the seat is freed up again.
+*/
 void
 inputdevice(struct wl_listener *listener, void *data)
 {
@@ -1737,8 +1733,7 @@ inputdevice(struct wl_listener *listener, void *data)
 	struct wlr_input_device *device = data;
 	uint32_t caps;
 
-	Seat *s = NULL;
-	wl_list_for_each(s, &seats, link) break;
+	Seat *s = &seats[seat_index];
 	printf("New input device of type %u, seat %lu\n", device->type, (uint64_t)s);
 
 	switch (device->type) {
@@ -1749,7 +1744,13 @@ inputdevice(struct wl_listener *listener, void *data)
 		createpointer(wlr_pointer_from_input_device(device));
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
-		s = createseat(dpy);
+		// The first input device created when a new user connects
+		// is a touch device, so we move to the next seat.
+		++seat_index;
+		if (seat_index >= MAX_NUM_USERS) {
+			seat_index = 0;
+		}
+		s = &seats[seat_index];
 		createtouch(wlr_touch_from_input_device(device));
 		break;
 	default:
@@ -1889,7 +1890,7 @@ locksession(struct wl_listener *listener, void *data)
 		return;
 	}
 	lock = ecalloc(1, sizeof(*lock));
-	focusclient(NULL, 0, firstseat()->seat);
+	focusclient(NULL, 0, currentseat()->seat);
 
 	lock->scene = wlr_scene_tree_create(layers[LyrBlock]);
 	cur_lock = lock->lock = session_lock;
@@ -1906,7 +1907,7 @@ locksession(struct wl_listener *listener, void *data)
 void
 maplayersurfacenotify(struct wl_listener *listener, void *data)
 {
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 	LayerSurface *l = wl_container_of(listener, l, map);
 	motionnotify(0, seat);
 }
@@ -1936,7 +1937,7 @@ mapnotify(struct wl_listener *listener, void *data)
 		wlr_scene_node_set_position(&c->scene->node, c->geom.x + borderpx,
 			c->geom.y + borderpx);
 		if (client_wants_focus(c)) {
-			focusclient(c, 1, firstseat()->seat);
+			focusclient(c, 1, currentseat()->seat);
 			exclusive_focus = c;
 		}
 		goto unset_fullscreen;
@@ -2111,8 +2112,8 @@ motionrelative(struct wl_listener *listener, void *data)
 void
 moveresize(const Arg *arg)
 {
-	struct wlr_cursor *cursor = firstseat()->cursor;
-	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+	struct wlr_cursor *cursor = currentseat()->cursor;
+	struct wlr_xcursor_manager *cursor_mgr = currentseat()->cursor_mgr;
 
 	if (cursor_mode != CurNormal && cursor_mode != CurPressed)
 		return;
@@ -2398,8 +2399,8 @@ run(char *startup_cmd)
 	}
 	printstatus();
 
-	struct wlr_cursor *cursor = firstseat()->cursor;
-	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+	struct wlr_cursor *cursor = currentseat()->cursor;
+	struct wlr_xcursor_manager *cursor_mgr = currentseat()->cursor_mgr;
 	/* At this point the outputs are initialized, choose initial selmon based on
 	 * cursor position, and set default cursor image */
 	selmon = xytomon(cursor->x, cursor->y);
@@ -2569,7 +2570,7 @@ setmon(Client *c, Monitor *m, uint32_t newtags)
 		setfullscreen(c, c->isfullscreen); /* This will call arrange(c->mon) */
 		setfloating(c, c->isfloating);
 	}
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 }
 
 void
@@ -2715,9 +2716,6 @@ setup(void)
 	xdg_decoration_mgr = wlr_xdg_decoration_manager_v1_create(dpy);
 	wl_signal_add(&xdg_decoration_mgr->events.new_toplevel_decoration, &new_xdg_decoration);
 
-	wl_list_init(&seats);
-	createseat(dpy);
-
 	virtual_keyboard_mgr = wlr_virtual_keyboard_manager_v1_create(dpy);
 	wl_signal_add(&virtual_keyboard_mgr->events.new_virtual_keyboard,
 			&new_virtual_keyboard);
@@ -2728,13 +2726,14 @@ setup(void)
 
 	wlr_scene_set_presentation(scene, wlr_presentation_create(dpy, backend));
 
+	for (i = 0; i < MAX_NUM_USERS; ++i) {
+		seatinit(dpy, i);
 #ifdef XWAYLAND
-	/*
-	 * Initialise the XWayland X server.
-	 * It will be started when the first X client is started.
-	 */
-	for (i = 0; i < MAX_XWAYLAND_INSTANCES; ++i) {
-		xwaylands[i].xwayland = wlr_xwayland_create(dpy, compositor, 0);
+		/*
+		* Initialise the XWayland X server.
+		* It will be started when the first X client is started.
+		*/
+		xwaylands[i].xwayland = wlr_xwayland_create(dpy, compositor, 0); // TODO change back to lazy once verified that it works
 		printf("Created xwayland %s\n", xwaylands[i].xwayland->display_name);
 		if (xwaylands[i].xwayland) {
 			xwaylands[i].events.ready.notify = xwaylandready;
@@ -2746,8 +2745,8 @@ setup(void)
 		} else {
 			fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
 		}
-	}
 #endif
+	}
 }
 
 void
@@ -2781,7 +2780,7 @@ tag(const Arg *arg)
 		return;
 
 	sel->tags = arg->ui & TAGMASK;
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 	arrange(selmon);
 	printstatus();
 }
@@ -2857,7 +2856,7 @@ toggletag(const Arg *arg)
 		return;
 
 	sel->tags = newtags;
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 	arrange(selmon);
 	printstatus();
 }
@@ -2872,7 +2871,7 @@ toggleview(const Arg *arg)
 		return;
 
 	selmon->tagset[selmon->seltags] = newtagset;
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 	arrange(selmon);
 	printstatus();
 }
@@ -2957,7 +2956,7 @@ touchup(struct wl_listener *listener, void *data)
 	struct wlr_touch_up_event *event = data;
 
 	printf("Touchup [%d], target seat: %lu, wlrseat: %lu, cursor: %lu, found seat: %lu, found wlrseat: %lu, found cursor: %lu\n",
-			event->touch_id, (uint64_t)firstseat(), (uint64_t)firstseat()->seat, (uint64_t)firstseat()->cursor, (uint64_t)s, (uint64_t)s->seat, (uint64_t)s->cursor);
+			event->touch_id, (uint64_t)currentseat(), (uint64_t)currentseat()->seat, (uint64_t)currentseat()->cursor, (uint64_t)s, (uint64_t)s->seat, (uint64_t)s->cursor);
 
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
@@ -2977,7 +2976,7 @@ void
 unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 {
 	printf("[Unmaplayersurfacenotify]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 
 	LayerSurface *layersurface = wl_container_of(listener, layersurface, unmap);
 
@@ -2999,7 +2998,7 @@ unmapnotify(struct wl_listener *listener, void *data)
 {
 	printf("[Unmapnotify]\n");
 
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 
 	/* Called when the surface is unmapped, and should no longer be shown. */
 	Client *c = wl_container_of(listener, c, unmap);
@@ -3029,7 +3028,7 @@ void
 updatemons(struct wl_listener *listener, void *data)
 {
 	printf("[Updatemons]\n");
-	struct wlr_seat *seat = firstseat()->seat;
+	struct wlr_seat *seat = currentseat()->seat;
 	/*
 	 * Called whenever the output layout changes: adding or removing a
 	 * monitor, changing an output's mode or position, etc. This is where
@@ -3145,7 +3144,7 @@ view(const Arg *arg)
 	selmon->seltags ^= 1; /* toggle sel tagset */
 	if (arg->ui & TAGMASK)
 		selmon->tagset[selmon->seltags] = arg->ui & TAGMASK;
-	focusclient(focustop(selmon), 1, firstseat()->seat);
+	focusclient(focustop(selmon), 1, currentseat()->seat);
 	arrange(selmon);
 	printstatus();
 }
@@ -3234,7 +3233,7 @@ zoom(const Arg *arg)
 	wl_list_remove(&sel->link);
 	wl_list_insert(&clients, &sel->link);
 
-	focusclient(sel, 1, firstseat()->seat);
+	focusclient(sel, 1, currentseat()->seat);
 	arrange(selmon);
 }
 
@@ -3341,8 +3340,8 @@ sethints(struct wl_listener *listener, void *data)
 void
 xwaylandready(struct wl_listener *listener, void *data)
 {
-	struct wlr_seat *seat = firstseat()->seat;
-	struct wlr_xcursor_manager *cursor_mgr = firstseat()->cursor_mgr;
+	struct wlr_seat *seat = currentseat()->seat;
+	struct wlr_xcursor_manager *cursor_mgr = currentseat()->cursor_mgr;
 	XWayland *xwayland = wl_container_of(listener, xwayland, events.ready);
 
 	struct wlr_xcursor *xcursor;
