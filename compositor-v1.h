@@ -52,3 +52,14 @@ WL_PRIVATE const struct wl_interface zcompositor_v1_interface = {
 	2, zcompositor_v1_events,
 };
 
+static const struct wl_message zinput_device_seat_mapper_v1_requests[] = {
+	{ "register_input_device", "si", compositor_unstable_v1_types + 0 },
+	{ "destroy", "", compositor_unstable_v1_types + 0 },
+};
+
+WL_PRIVATE const struct wl_interface zinput_device_seat_mapper_v1_interface = {
+	"zinput_device_seat_mapper_v1", 1,
+	2, zinput_device_seat_mapper_v1_requests,
+	0, NULL,
+};
+

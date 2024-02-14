@@ -1,5 +1,5 @@
 #define XWAYLAND
-#define MAX_NUM_USERS 10 
+#define MAX_NUM_USERS 15
 /*
  * See LICENSE file for copyright and license details.
  */
@@ -268,6 +268,13 @@ typedef struct {
 	} events;
 } Seat;
 
+typedef struct {
+	struct wl_list link;
+	char device_name[256];
+	int seat_index;
+} RegisteredSeat;
+
+
 void seatinit(struct wl_display *dpy, int i);
 Seat* currentseat(void);
 
@@ -416,9 +423,9 @@ static struct wlr_session_lock_manager_v1 *session_lock_mgr;
 static struct wlr_scene_rect *locked_bg;
 static struct wlr_session_lock_v1 *cur_lock;
 
-static int seat_index = 0;
-static Seat seats[MAX_NUM_USERS];
-// static struct wl_list keyboards;
+static int seat_index = MAX_NUM_USERS;
+static Seat seats[MAX_NUM_USERS + 1];
+
 static unsigned int cursor_mode;
 static Client *grabc;
 static int grabcx, grabcy; /* client-relative */
@@ -480,6 +487,17 @@ struct compositor_v1 {
 	struct wl_resource *resource;
 };
 
+struct input_device_seat_mapper_v1 {
+	struct wl_list registered_seats;
+	struct wl_global *global;
+	struct wl_listener display_destroy;
+	struct {
+		struct wl_signal destroy;
+	} events;
+};
+
+static struct input_device_seat_mapper_v1 *seat_mapper;
+
 static void compositor_handle_destroy(struct wl_client *client,
 		struct wl_resource *resource) {
 	wl_resource_destroy(resource);
@@ -527,7 +545,6 @@ void set_window_area(struct wl_client *client, struct wl_resource *manager_resou
 	}
 }
 
-
 static void manager_handle_destroy(struct wl_client *client,
 		struct wl_resource *manager_resource) {
 	wl_resource_destroy(manager_resource);
@@ -542,7 +559,7 @@ static const struct zcompositor_manager_v1_interface manager_impl = {
 
 static void manager_bind(struct wl_client *client, void *data, uint32_t version,
 		uint32_t id) {
-	struct wlr_export_dmabuf_manager_v1 *manager = data;
+	struct compositor_manager_v1 *manager = data;
 
 	struct wl_resource *resource = wl_resource_create(client,
 		&zcompositor_manager_v1_interface, version, id);
@@ -554,8 +571,8 @@ static void manager_bind(struct wl_client *client, void *data, uint32_t version,
 		NULL);
 }
 
-static void handle_display_destroy(struct wl_listener *listener, void *data) {
-	struct wlr_export_dmabuf_manager_v1 *manager =
+static void manager_handle_display_destroy(struct wl_listener *listener, void *data) {
+	struct compositor_manager_v1 *manager =
 		wl_container_of(listener, manager, display_destroy);
 	wl_signal_emit_mutable(&manager->events.destroy, manager);
 	wl_list_remove(&manager->display_destroy.link);
@@ -574,10 +591,71 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 		free(manager);
 	}
 	printf("Created global\n");
-	manager->display_destroy.notify = handle_display_destroy;
+	manager->display_destroy.notify = manager_handle_display_destroy;
 	wl_display_add_destroy_listener(display, &manager->display_destroy);
 
 	return manager;
+}
+
+
+static void seat_mapper_handle_destroy(struct wl_client *client,
+		struct wl_resource *manager_resource) {
+	wl_resource_destroy(manager_resource);
+}
+
+static void handle_register_input_device(struct wl_client *client, 
+		struct wl_resource *resource, const char *name, int32_t seat_index) {
+	printf("Registering input device %s at seat index %d\n", name, seat_index);
+	RegisteredSeat* reg_seat = ecalloc(1, sizeof(RegisteredSeat));
+	strcpy(reg_seat->device_name, name);
+	reg_seat->seat_index = seat_index;
+	wl_list_insert(&seat_mapper->registered_seats, &reg_seat->link);
+}
+
+static const struct zinput_device_seat_mapper_v1_interface seat_mapper_impl = {
+	.register_input_device = handle_register_input_device,
+	.destroy = seat_mapper_handle_destroy,
+};
+
+static void seat_mapper_bind(struct wl_client *client, void *data, uint32_t version,
+		uint32_t id) {
+	struct input_device_seat_mapper_v1 *seat_mapper = data;
+
+	struct wl_resource *resource = wl_resource_create(client,
+		&zinput_device_seat_mapper_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &seat_mapper_impl, seat_mapper,
+		NULL);
+}
+
+static void seat_mapper_handle_display_destroy(struct wl_listener *listener, void *data) {
+	struct input_device_seat_mapper_v1 *seat_mapper =
+		wl_container_of(listener, seat_mapper, display_destroy);
+	wl_signal_emit_mutable(&seat_mapper->events.destroy, seat_mapper);
+	wl_list_remove(&seat_mapper->display_destroy.link);
+	wl_global_destroy(seat_mapper->global);
+	free(seat_mapper);
+	printf("Seat mapper destroyed\n");
+}
+
+struct input_device_seat_mapper_v1 *input_device_seat_mapper_v1_create(struct wl_display *display) {
+	struct input_device_seat_mapper_v1 *seat_mapper = ecalloc(1, sizeof(struct input_device_seat_mapper_v1));
+	wl_list_init(&seat_mapper->registered_seats);
+	wl_signal_init(&seat_mapper->events.destroy);
+	printf("Creating seat mapper v1 global\n");
+	seat_mapper->global = wl_global_create(display, &zinput_device_seat_mapper_v1_interface, 1, seat_mapper, seat_mapper_bind);
+	if (seat_mapper->global == NULL) {
+		printf("Global is null\n");
+		free(seat_mapper);
+	}
+	printf("Created global\n");
+	seat_mapper->display_destroy.notify = seat_mapper_handle_display_destroy;
+	wl_display_add_destroy_listener(display, &seat_mapper->display_destroy);
+
+	return seat_mapper;
 }
 
 void seatinit(struct wl_display *display, int i) {
@@ -600,7 +678,7 @@ void seatinit(struct wl_display *display, int i) {
 	 * images are available at all scale factors on the screen (necessary for
 	 * HiDPI support). Scaled cursors will be loaded with each output. */
 	s->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
-	setenv("XCURSOR_SIZE", "24", 1);
+	setenv("XCURSOR_SIZE", "0", 1);
 
 	/*
 	 * wlr_cursor *only* displays an image on screen. It does not move around
@@ -1732,9 +1810,25 @@ inputdevice(struct wl_listener *listener, void *data)
 	 * available. */
 	struct wlr_input_device *device = data;
 	uint32_t caps;
+	seat_index = MAX_NUM_USERS;
+
+	RegisteredSeat* rs;
+	wl_list_for_each(rs, &seat_mapper->registered_seats, link) {
+		if (strcmp(rs->device_name, device->name) == 0) {
+			seat_index = rs->seat_index;
+			break;
+		}
+	}
+
+	if (seat_index != MAX_NUM_USERS) {
+		wl_list_remove(&rs->link);
+		free(rs);
+	} else {
+		return;
+	}
 
 	Seat *s = &seats[seat_index];
-	printf("New input device of type %u, seat %lu\n", device->type, (uint64_t)s);
+	printf("New input device %s at seat index %d of type %u, seat %lu\n", device->name, seat_index, device->type, (uint64_t)s);
 
 	switch (device->type) {
 	case WLR_INPUT_DEVICE_KEYBOARD:
@@ -1744,13 +1838,6 @@ inputdevice(struct wl_listener *listener, void *data)
 		createpointer(wlr_pointer_from_input_device(device));
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
-		// The first input device created when a new user connects
-		// is a touch device, so we move to the next seat.
-		++seat_index;
-		if (seat_index >= MAX_NUM_USERS) {
-			seat_index = 0;
-		}
-		s = &seats[seat_index];
 		createtouch(wlr_touch_from_input_device(device));
 		break;
 	default:
@@ -2662,6 +2749,7 @@ setup(void)
 	wlr_fractional_scale_manager_v1_create(dpy, 1);
 	// wlr_gamma_control_manager_v1_create(dpy);
 	compositor_manager_v1_create(dpy);
+	seat_mapper = input_device_seat_mapper_v1_create(dpy);
 	virtual_pointer_mgr = wlr_virtual_pointer_manager_v1_create(dpy);
 	wl_signal_add(&virtual_pointer_mgr->events.new_virtual_pointer,
 			&new_virtual_pointer);
@@ -2726,6 +2814,7 @@ setup(void)
 
 	wlr_scene_set_presentation(scene, wlr_presentation_create(dpy, backend));
 
+	seatinit(dpy, MAX_NUM_USERS);
 	for (i = 0; i < MAX_NUM_USERS; ++i) {
 		seatinit(dpy, i);
 #ifdef XWAYLAND

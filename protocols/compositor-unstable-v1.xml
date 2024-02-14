@@ -67,4 +67,28 @@
       </description>
     </request>
   </interface>
+  <interface name="zinput_device_seat_mapper_v1" version="1">
+    <description summary="a input device seat mapper that maps input devices to seats">
+      This object represents an input device mapper that can map input devices to a specific seat.
+    </description>
+
+    <request name="register_input_device">
+      <description summary="registers an input device name to be mapped to a seat">
+        Registers an input device name to be mapped to a seat with a given index. 
+        Has to be called before device is created.
+      </description>
+      <arg name="name" type="string" summary="name of the input device"/>
+      <arg name="seat_index" type="int" summary="seat index"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not">
+        Unreferences the input device mapper. This request must be called as soon as its no
+        longer used.
+
+        It can be called at any time by the client. The client will still have
+        to close any FDs it has been given.
+      </description>
+    </request>
+  </interface>
 </protocol>
