@@ -534,7 +534,14 @@ void set_window_area(struct wl_client *client, struct wl_resource *manager_resou
 	wl_list_for_each(c, &fstack, flink) {
 		if (c->serial == window_id) {
 			printf("Resizing window\n");
-			resize(c, geom, 0);
+			if (geom.x != c->geom.x || 
+				geom.y != c->geom.y || 
+				geom.width != c->geom.width || 
+				geom.height != c->geom.height) 
+			{
+				resize(c, geom, 0);
+			}
+			focusclient(c, 1, currentseat()->seat);
 			break;
 		}
 	}
