@@ -541,7 +541,7 @@ void set_window_area(struct wl_client *client, struct wl_resource *manager_resou
 			{
 				resize(c, geom, 0);
 			}
-			focusclient(c, 1, currentseat()->seat);
+			wlr_scene_node_raise_to_top(&c->scene->node);
 			break;
 		}
 	}
