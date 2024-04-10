@@ -62,6 +62,7 @@
 #include <xkbcommon/xkbcommon.h>
 #ifdef XWAYLAND
 #include <wlr/xwayland.h>
+#include <wlr/xwayland/shell.h>
 #include <xcb/xcb.h>
 #include <xcb/xcb_icccm.h>
 #endif
@@ -2688,6 +2689,50 @@ setsel(struct wl_listener *listener, void *data)
 	wlr_seat_set_selection(seat, event->source, event->serial);
 }
 
+static bool is_xwayland_client(struct wl_client *client) {
+    pid_t pid;
+    uid_t uid;
+    gid_t gid;
+    wl_client_get_credentials(client, &pid, &uid, &gid);
+
+    // Construct the path to the comm file
+    char comm_path[256];
+    snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
+
+    // Read the process name from the comm file
+    char proc_name[256];
+    FILE *comm_file = fopen(comm_path, "r");
+    if (comm_file == NULL) {
+        return false; // Unable to open the file, can't determine
+    }
+    if (fgets(proc_name, sizeof(proc_name), comm_file) == NULL) {
+        fclose(comm_file);
+        return false; // Unable to read from the file
+    }
+    fclose(comm_file);
+
+    // Trim the newline character from fgets
+    proc_name[strcspn(proc_name, "\n")] = 0;
+
+    // Check if the process name matches "Xwayland"
+    return strcmp(proc_name, "Xwayland") == 0;
+}
+
+static bool global_filter(const struct wl_client *client, const struct wl_global *global, void *user_data) {
+	const struct wl_interface *interface = wl_global_get_interface(global);
+    // Check the interface name to determine the type of the global
+    if (strcmp(interface->name, "xwayland_shell_v1") == 0) {
+		for (int i = 0; i < MAX_NUM_USERS; i++) {
+			struct wlr_xwayland *xwayland = xwaylands[i].xwayland;
+			if (xwayland && global == xwayland->shell_v1->global) {
+				return xwayland->server != NULL && client == xwayland->server->client;
+			}
+		}
+		return false;
+    }
+    return true;
+}
+
 void
 setup(void)
 {
@@ -2703,6 +2748,8 @@ setup(void)
 	/* The Wayland display is managed by libwayland. It handles accepting
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
 	dpy = wl_display_create();
+
+	wl_display_set_global_filter(dpy, global_filter, NULL);
 
 	/* The backend is a wlroots feature which abstracts the underlying input and
 	 * output hardware. The autocreate option will choose the most suitable
@@ -2822,7 +2869,7 @@ setup(void)
 		* Initialise the XWayland X server.
 		* It will be started when the first X client is started.
 		*/
-		xwaylands[i].xwayland = wlr_xwayland_create(dpy, compositor, 0); // TODO change back to lazy once verified that it works
+		xwaylands[i].xwayland = wlr_xwayland_create(dpy, compositor, 1);
 		printf("Created xwayland %s\n", xwaylands[i].xwayland->display_name);
 		if (xwaylands[i].xwayland) {
 			xwaylands[i].events.ready.notify = xwaylandready;
