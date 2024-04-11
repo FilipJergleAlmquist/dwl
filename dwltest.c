@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-client.h>
-#include <compositor-client-v1.h>
+#include "compositor-client-v1.h"
 
 struct WindowInfo {
     uint32_t window_id;
