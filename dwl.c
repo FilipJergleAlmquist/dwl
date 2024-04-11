@@ -979,25 +979,17 @@ checkidleinhibitor(struct wlr_surface *exclude)
 void
 cleanup(void)
 {
-	for (int i = 0; i < MAX_NUM_USERS; ++i) {
-		Seat *s = &seats[i];
-		wlr_xcursor_manager_destroy(s->cursor_mgr);
-		wlr_cursor_destroy(s->cursor);
-		wlr_seat_destroy(s->seat);
-
 #ifdef XWAYLAND
+	for (int i = 0; i < MAX_NUM_USERS; ++i) {
 		wlr_xwayland_destroy(xwaylands[i].xwayland);
 		xwaylands[i].xwayland = NULL;
-#endif
 	}
+#endif
 	wl_display_destroy_clients(dpy);
 	if (child_pid > 0) {
 		kill(child_pid, SIGTERM);
 		waitpid(child_pid, NULL, 0);
 	}
-	// wlr_backend_destroy(backend);
-	// wlr_renderer_destroy(drw);
-	// wlr_allocator_destroy(alloc);
 	wlr_output_layout_destroy(output_layout);
 	wl_display_destroy(dpy);
 	/* Destroy after the wayland display (when the monitors are already destroyed)
