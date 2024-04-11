@@ -200,16 +200,20 @@ client_get_pid(Client *c) {
 	struct wlr_xdg_surface *xdg_surf;
 	struct wl_client *client;
 #ifdef XWAYLAND
+	xcb_connection_t *xc;
+	xcb_get_property_cookie_t cookie;
+	xcb_get_property_reply_t *reply;
+	int err;
 	if (client_is_x11(c)) {
 		xwayland_surf = c->surface.xwayland;
-		xcb_connection_t *xc = xcb_connect(c->display_name, NULL);
-		int err = xcb_connection_has_error(xc);
+		xc = xcb_connect(c->display_name, NULL);
+		err = xcb_connection_has_error(xc);
 		if (err) {
 			fprintf(stderr, "xcb_connect to X server failed with code %d\n. Return old PID\n", err);
 			return xwayland_surf->pid;
 		}
-		xcb_get_property_cookie_t cookie = xcb_get_property(xc, 0, xwayland_surf->window_id, netatom[NetWMPid], XCB_ATOM_CARDINAL, 0, 1);
-		xcb_get_property_reply_t *reply = xcb_get_property_reply(xc, cookie, NULL);
+    	cookie = xcb_get_property(xc, 0, xwayland_surf->window_id, netatom[NetWMPid], XCB_ATOM_CARDINAL, 0, 1);
+		reply = xcb_get_property_reply(xc, cookie, NULL);
 
 		if (reply != NULL) {
 			if (xcb_get_property_value_length(reply) == sizeof(uint32_t)) {
