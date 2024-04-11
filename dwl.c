@@ -686,7 +686,7 @@ void seatinit(struct wl_display *display, int i) {
 	 * images are available at all scale factors on the screen (necessary for
 	 * HiDPI support). Scaled cursors will be loaded with each output. */
 	s->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
-	setenv("XCURSOR_SIZE", "0", 1);
+	setenv("XCURSOR_SIZE", "24", 1);
 
 	/*
 	 * wlr_cursor *only* displays an image on screen. It does not move around
@@ -933,7 +933,6 @@ buttonpress(struct wl_listener *listener, void *data)
 			 * we will send an enter event after which the client will provide us
 			 * a cursor surface */
 			wlr_seat_pointer_clear_focus(seat);
-			// motionnotify(0, seat);
 			/* Drop the window off on its new monitor */
 			selmon = xytomon(cursor->x, cursor->y);
 			setmon(grabc, selmon, 0);
