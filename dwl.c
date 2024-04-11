@@ -611,11 +611,11 @@ static void seat_mapper_handle_destroy(struct wl_client *client,
 }
 
 static void handle_register_input_device(struct wl_client *client, 
-		struct wl_resource *resource, const char *name, int32_t seat_index) {
-	printf("Registering input device %s at seat index %d\n", name, seat_index);
+		struct wl_resource *resource, const char *name, int32_t index) {
+	printf("Registering input device %s at seat index %d\n", name, index);
 	RegisteredSeat* reg_seat = ecalloc(1, sizeof(RegisteredSeat));
 	strcpy(reg_seat->device_name, name);
-	reg_seat->seat_index = seat_index;
+	reg_seat->seat_index = index;
 	wl_list_insert(&seat_mapper->registered_seats, &reg_seat->link);
 }
 
@@ -626,7 +626,7 @@ static const struct zinput_device_seat_mapper_v1_interface seat_mapper_impl = {
 
 static void seat_mapper_bind(struct wl_client *client, void *data, uint32_t version,
 		uint32_t id) {
-	struct input_device_seat_mapper_v1 *seat_mapper = data;
+	struct input_device_seat_mapper_v1 *sm = data;
 
 	struct wl_resource *resource = wl_resource_create(client,
 		&zinput_device_seat_mapper_v1_interface, version, id);
@@ -634,35 +634,35 @@ static void seat_mapper_bind(struct wl_client *client, void *data, uint32_t vers
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &seat_mapper_impl, seat_mapper,
+	wl_resource_set_implementation(resource, &seat_mapper_impl, sm,
 		NULL);
 }
 
 static void seat_mapper_handle_display_destroy(struct wl_listener *listener, void *data) {
-	struct input_device_seat_mapper_v1 *seat_mapper =
-		wl_container_of(listener, seat_mapper, display_destroy);
-	wl_signal_emit_mutable(&seat_mapper->events.destroy, seat_mapper);
-	wl_list_remove(&seat_mapper->display_destroy.link);
-	wl_global_destroy(seat_mapper->global);
-	free(seat_mapper);
+	struct input_device_seat_mapper_v1 *sm =
+		wl_container_of(listener, sm, display_destroy);
+	wl_signal_emit_mutable(&sm->events.destroy, sm);
+	wl_list_remove(&sm->display_destroy.link);
+	wl_global_destroy(sm->global);
+	free(sm);
 	printf("Seat mapper destroyed\n");
 }
 
 struct input_device_seat_mapper_v1 *input_device_seat_mapper_v1_create(struct wl_display *display) {
-	struct input_device_seat_mapper_v1 *seat_mapper = ecalloc(1, sizeof(struct input_device_seat_mapper_v1));
-	wl_list_init(&seat_mapper->registered_seats);
-	wl_signal_init(&seat_mapper->events.destroy);
+	struct input_device_seat_mapper_v1 *sm = ecalloc(1, sizeof(struct input_device_seat_mapper_v1));
+	wl_list_init(&sm->registered_seats);
+	wl_signal_init(&sm->events.destroy);
 	printf("Creating seat mapper v1 global\n");
-	seat_mapper->global = wl_global_create(display, &zinput_device_seat_mapper_v1_interface, 1, seat_mapper, seat_mapper_bind);
-	if (seat_mapper->global == NULL) {
+	sm->global = wl_global_create(display, &zinput_device_seat_mapper_v1_interface, 1, sm, seat_mapper_bind);
+	if (sm->global == NULL) {
 		printf("Global is null\n");
-		free(seat_mapper);
+		free(sm);
 	}
 	printf("Created global\n");
-	seat_mapper->display_destroy.notify = seat_mapper_handle_display_destroy;
-	wl_display_add_destroy_listener(display, &seat_mapper->display_destroy);
+	sm->display_destroy.notify = seat_mapper_handle_display_destroy;
+	wl_display_add_destroy_listener(display, &sm->display_destroy);
 
-	return seat_mapper;
+	return sm;
 }
 
 void seatinit(struct wl_display *display, int i) {
@@ -981,13 +981,12 @@ cleanup(void)
 	for (int i = 0; i < MAX_NUM_USERS; ++i) {
 		Seat *s = &seats[i];
 		wlr_xcursor_manager_destroy(s->cursor_mgr);
-		// wlr_cursor_destroy(s->cursor);
-		// wlr_seat_destroy(s->seat);
+		wlr_cursor_destroy(s->cursor);
+		wlr_seat_destroy(s->seat);
 
 #ifdef XWAYLAND
 		wlr_xwayland_destroy(xwaylands[i].xwayland);
 		xwaylands[i].xwayland = NULL;
-	}
 #endif
 	}
 	wl_display_destroy_clients(dpy);
@@ -2517,12 +2516,12 @@ run(char *startup_cmd)
 void
 setcursor(struct wl_listener *listener, void *data)
 {
-	Seat *s = wl_container_of(listener, s, events.request_cursor);
-	struct wlr_seat *seat = s->seat;
-	struct wlr_cursor *cursor = s->cursor;
+	// Seat *s = wl_container_of(listener, s, events.request_cursor);
+	// struct wlr_seat *seat = s->seat;
+	// struct wlr_cursor *cursor = s->cursor;
 
 	/* This event is raised by the seat when a client provides a cursor image */
-	struct wlr_seat_pointer_request_set_cursor_event *event = data;
+	// struct wlr_seat_pointer_request_set_cursor_event *event = data;
 	/* If we're "grabbing" the cursor, don't use the client's image, we will
 	 * restore it after "grabbing" sending a leave event, followed by a enter
 	 * event, which will result in the client requesting set the cursor surface */
