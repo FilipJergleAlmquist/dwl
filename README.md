@@ -171,3 +171,11 @@ inspiration, and to the various contributors to the project, including:
 [wiki]: https://github.com/djpohly/dwl/wiki#compatible-status-bars
 [list of useful resources on our wiki]:
     https://github.com/djpohly/dwl/wiki#migrating-from-x
+
+
+## AppImage
+To build an AppImage run:
+```
+make install DESTDIR=AppDir PREFIX=/usr
+linuxdeploy --appdir AppDir -d dwl.desktop -i dwl.png
+```

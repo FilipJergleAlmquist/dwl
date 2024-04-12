@@ -1,5 +1,7 @@
 [Desktop Entry]
 Name=dwl
-Comment=dwm for Wayland
+Comment=dwm for Wayland, icons created by Freepik - Flaticon
 Exec=dwl
 Type=Application
+Icon=dwl
+Categories=System
