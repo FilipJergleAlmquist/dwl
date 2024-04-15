@@ -513,15 +513,20 @@ static const struct zcompositor_v1_interface compositor_impl = {
 
 void get_window_info(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id) {
 	Client *c;
+	const char *title;
 	uint32_t version = wl_resource_get_version(manager_resource);
+
 	struct wl_resource *resource = wl_resource_create(client,
 		&zcompositor_v1_interface, version, id);
 
 	wl_resource_set_implementation(resource, &compositor_impl, NULL,
 		compositor_handle_resource_destroy);
 
-	wl_list_for_each(c, &fstack, flink)
-		zcompositor_v1_send_window_info(resource, c->serial, client_get_pid(c), client_get_title(c));
+
+	wl_list_for_each(c, &fstack, flink) {
+	 	title = client_get_title(c) ? client_get_title(c) : "unknown";
+		zcompositor_v1_send_window_info(resource, c->serial, client_get_pid(c), title);
+	}
 
 	zcompositor_v1_send_done(resource);
 }
