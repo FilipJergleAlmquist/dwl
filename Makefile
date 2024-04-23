@@ -16,7 +16,7 @@ LDLIBS    = `$(PKG_CONFIG) --libs $(PKGS)` $(LIBS)
 all: dwl
 dwl: dwl.o util.o #compositor-v1.o
 	$(CC) dwl.o util.o $(LDLIBS) $(LDFLAGS) $(DWLCFLAGS) -o $@
-dwl.o: dwl.c config.mk config.h client.h xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h compositor-unstable-v1-protocol.h
+dwl.o: dwl.c config.mk config.h client.h xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h compositor-unstable-v1-protocol.h compositor-v1.h
 util.o: util.c util.h
 # compositor-v1.o: compositor-v1.c
 
@@ -34,6 +34,9 @@ wlr-layer-shell-unstable-v1-protocol.h:
 		protocols/wlr-layer-shell-unstable-v1.xml $@
 compositor-unstable-v1-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
+		protocols/compositor-unstable-v1.xml $@
+compositor-v1.h:
+	$(WAYLAND_SCANNER) private-code \
 		protocols/compositor-unstable-v1.xml $@
 
 config.h:

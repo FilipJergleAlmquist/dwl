@@ -552,8 +552,24 @@ void set_window_area(struct wl_client *client, struct wl_resource *manager_resou
 			{
 				resize(c, geom, 0);
 			}
-			wlr_scene_node_raise_to_top(&c->scene->node);
 			break;
+		}
+	}
+}
+
+void raise_window(struct wl_client *client, struct wl_resource *manager_resource,
+		uint32_t window_id) {
+	Client *c;
+	printf("Got raise window request for %u\n", window_id);
+
+	wl_list_for_each(c, &fstack, flink) {
+		if (c->serial == window_id) {
+			printf("Raising window\n");
+			wlr_scene_node_raise_to_top(&c->scene->node);
+			wlr_scene_node_reparent(&c->scene->node, layers[LyrTop]);
+			break;
+		} else {
+			wlr_scene_node_reparent(&c->scene->node, layers[LyrBottom]);
 		}
 	}
 }
@@ -567,6 +583,7 @@ static void manager_handle_destroy(struct wl_client *client,
 static const struct zcompositor_manager_v1_interface manager_impl = {
 	.get_window_info = get_window_info,
 	.set_window_area = set_window_area,
+	.raise_window = raise_window,
 	.destroy = manager_handle_destroy,
 };
 
@@ -1625,8 +1642,8 @@ focusclient(Client *c, int lift, struct wlr_seat *seat)
 		return;
 
 	/* Raise client in stacking order if requested */
-	if (c && lift)
-		wlr_scene_node_raise_to_top(&c->scene->node);
+	// if (c && lift)
+	// 	wlr_scene_node_raise_to_top(&c->scene->node);
 
 	// if (c && client_surface(c) == old)
 	// 	return;
@@ -2054,6 +2071,8 @@ mapnotify(struct wl_listener *listener, void *data)
 	} else {
 		applyrules(c);
 	}
+
+	wlr_scene_node_reparent(&c->scene->node, layers[LyrBottom]);
 	printstatus();
 
 unset_fullscreen:

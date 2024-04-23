@@ -26,6 +26,13 @@
       <arg name="height" type="int" summary="window height"/>
     </request>
 
+    <request name="raise_window">
+      <description summary="raises a window to the top">
+        Raises a window to the top.
+      </description>
+      <arg name="window_id" type="uint" summary="window id"/>
+    </request>
+
     <request name="destroy" type="destructor">
       <description summary="delete this object, used or not">
         Unreferences the compositor manager. This request must be called as soon as it's no longer used.
