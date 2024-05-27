@@ -4,7 +4,7 @@
  * See LICENSE file for copyright and license details.
  */
 #include <assert.h>
-#include <compositor-v1.h>
+#include <compositor-unstable-v1-private-protocol.h>
 #include "compositor-unstable-v1-protocol.h"
 #include <getopt.h>
 #include <libinput.h>
@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -22,13 +23,13 @@
 #include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/render/gles2.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
-// #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_input_device.h>
@@ -184,6 +185,7 @@ typedef struct
 	uint32_t resize; /* configure serial of a pending resize */
 	uint32_t serial;
 	const char *display_name;
+	struct wlr_texture *target;
 } Client;
 
 typedef struct
@@ -532,6 +534,16 @@ struct compositor_manager_v1
 	} events;
 };
 
+struct window_capture_manager_v1
+{
+	struct wl_global *global;
+	struct wl_listener display_destroy;
+	struct
+	{
+		struct wl_signal destroy;
+	} events;
+};
+
 struct compositor_v1
 {
 	struct wl_resource *resource;
@@ -550,8 +562,8 @@ struct input_device_seat_mapper_v1
 
 static struct input_device_seat_mapper_v1 *seat_mapper;
 
-static void compositor_handle_destroy(struct wl_client *client,
-									  struct wl_resource *resource)
+static void handle_destroy(struct wl_client *client,
+						   struct wl_resource *resource)
 {
 	wl_resource_destroy(resource);
 }
@@ -561,7 +573,7 @@ static void compositor_handle_resource_destroy(struct wl_resource *resource)
 }
 
 static const struct zcompositor_v1_interface compositor_impl = {
-	.destroy = compositor_handle_destroy,
+	.destroy = handle_destroy,
 };
 
 void get_window_info(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id)
@@ -627,7 +639,6 @@ void raise_window(struct wl_client *client, struct wl_resource *manager_resource
 			printf("Raising window\n");
 			wlr_scene_node_raise_to_top(&c->scene->node);
 			wlr_scene_node_reparent(&c->scene->node, layers[LyrTop]);
-			break;
 		}
 		else
 		{
@@ -636,21 +647,15 @@ void raise_window(struct wl_client *client, struct wl_resource *manager_resource
 	}
 }
 
-static void manager_handle_destroy(struct wl_client *client,
-								   struct wl_resource *manager_resource)
-{
-	wl_resource_destroy(manager_resource);
-}
-
-static const struct zcompositor_manager_v1_interface manager_impl = {
+static const struct zcompositor_manager_v1_interface compositor_manager_impl = {
 	.get_window_info = get_window_info,
 	.set_window_area = set_window_area,
 	.raise_window = raise_window,
-	.destroy = manager_handle_destroy,
+	.destroy = handle_destroy,
 };
 
-static void manager_bind(struct wl_client *client, void *data, uint32_t version,
-						 uint32_t id)
+static void compositor_manager_bind(struct wl_client *client, void *data, uint32_t version,
+									uint32_t id)
 {
 	struct compositor_manager_v1 *manager = data;
 
@@ -661,7 +666,7 @@ static void manager_bind(struct wl_client *client, void *data, uint32_t version,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &manager_impl, manager,
+	wl_resource_set_implementation(resource, &compositor_manager_impl, manager,
 								   NULL);
 }
 
@@ -681,7 +686,7 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 	struct compositor_manager_v1 *manager = ecalloc(1, sizeof(struct compositor_manager_v1));
 	wl_signal_init(&manager->events.destroy);
 	printf("Creating comp man v1 global\n");
-	manager->global = wl_global_create(display, &zcompositor_manager_v1_interface, 1, manager, manager_bind);
+	manager->global = wl_global_create(display, &zcompositor_manager_v1_interface, 1, manager, compositor_manager_bind);
 	if (manager->global == NULL)
 	{
 		printf("Global is null\n");
@@ -692,6 +697,204 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 	wl_display_add_destroy_listener(display, &manager->display_destroy);
 
 	return manager;
+}
+
+void copy_window_frame(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id, uint32_t window_id,
+					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t wait_for_next_frame);
+
+static const struct zwindow_capture_manager_v1_interface window_capture_manager_impl = {
+	.copy_window_frame = copy_window_frame,
+	.destroy = handle_destroy,
+};
+
+static void window_capture_manager_bind(struct wl_client *client, void *data, uint32_t version,
+										uint32_t id)
+{
+	struct window_capture_manager_v1 *manager = data;
+
+	struct wl_resource *resource = wl_resource_create(client,
+													  &zwindow_capture_manager_v1_interface, version, id);
+	if (resource == NULL)
+	{
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &window_capture_manager_impl, manager,
+								   NULL);
+}
+
+struct window_capture_manager_v1 *window_capture_manager_v1_create(struct wl_display *display)
+{
+	struct window_capture_manager_v1 *manager = ecalloc(1, sizeof(struct window_capture_manager_v1));
+	wl_signal_init(&manager->events.destroy);
+	printf("Creating comp man v1 global\n");
+	manager->global = wl_global_create(display, &zwindow_capture_manager_v1_interface, 1, manager, window_capture_manager_bind);
+	if (manager->global == NULL)
+	{
+		printf("Global is null\n");
+		free(manager);
+	}
+	printf("Created global\n");
+	manager->display_destroy.notify = manager_handle_display_destroy;
+	wl_display_add_destroy_listener(display, &manager->display_destroy);
+
+	return manager;
+}
+
+static void window_frame_handle_destroy(struct wl_client *client,
+										struct wl_resource *resource)
+{
+	wl_resource_destroy(resource);
+}
+
+static void window_frame_handle_resource_destroy(struct wl_resource *resource)
+{
+}
+
+static const struct zwindow_dmabuf_frame_v1_interface window_frame_impl = {
+	.destroy = window_frame_handle_destroy,
+};
+
+struct window_dmabuf_frame_v1
+{
+	struct wl_resource *resource;
+	struct window_capture_manager_v1 *manager;
+
+	Client *client;
+
+	struct wl_listener client_commit;
+};
+
+static void frame_destroy(struct window_dmabuf_frame_v1 *frame)
+{
+	if (frame == NULL)
+	{
+		return;
+	}
+	wl_list_remove(&frame->client_commit.link);
+	// Make the frame resource inert
+	wl_resource_set_user_data(frame->resource, NULL);
+	free(frame);
+}
+
+static void frame_client_handle_commit(struct wl_listener *listener,
+									   void *data)
+{
+	struct window_dmabuf_frame_v1 *frame =
+		wl_container_of(listener, frame, client_commit);
+	Client *c = frame->client;
+	struct wlr_surface *surface = client_surface(c);
+	struct wlr_buffer *buffer = &surface->buffer->base;
+	struct wlr_dmabuf_attributes attribs = {0};
+	struct wlr_texture *target = c->target;
+	struct wlr_texture *source;
+
+	wl_list_remove(&frame->client_commit.link);
+	wl_list_init(&frame->client_commit.link);
+
+	if (!wlr_buffer_get_dmabuf(buffer, &attribs))
+	{
+		zwindow_dmabuf_frame_v1_send_cancel(frame->resource, ZWINDOW_DMABUF_FRAME_V1_CANCEL_REASON_TEMPORARY);
+		frame_destroy(frame);
+		return;
+	}
+
+	source = wlr_gles2_texture_from_dmabuf(surface->renderer, &attribs);
+
+	if (source && target)
+	{
+		wlr_gles2_texture_copy(source, target);
+		wlr_texture_destroy(source);
+		wlr_texture_destroy(target);
+		c->target = NULL;
+	}
+
+	zwindow_dmabuf_frame_v1_send_done(frame->resource);
+	frame_destroy(frame);
+}
+
+uint32_t align64(uint32_t value)
+{
+	return (((value + 63) >> 6) << 6);
+}
+
+void copy_window_frame(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id, uint32_t window_id,
+					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t wait_for_next_frame)
+{
+	Client *c;
+	struct window_dmabuf_frame_v1 *frame = calloc(1, sizeof(*frame));
+	struct window_capture_manager_v1 *manager;
+	uint32_t version;
+	struct wlr_dmabuf_attributes attrib = {0};
+	struct wlr_texture *target;
+
+	if (frame == NULL)
+	{
+		wl_resource_post_no_memory(manager_resource);
+		return;
+	}
+	assert(wl_resource_instance_of(manager_resource,
+								   &zwindow_capture_manager_v1_interface, &window_capture_manager_impl));
+	manager = wl_resource_get_user_data(manager_resource);
+	frame->manager = manager;
+	wl_list_init(&frame->client_commit.link);
+
+	version = wl_resource_get_version(manager_resource);
+	frame->resource = wl_resource_create(client,
+										 &zwindow_dmabuf_frame_v1_interface, version, id);
+	if (frame->resource == NULL)
+	{
+		wl_client_post_no_memory(client);
+		free(frame);
+		return;
+	}
+	wl_resource_set_implementation(frame->resource, &window_frame_impl, frame,
+								   window_frame_handle_resource_destroy);
+
+	frame->client = NULL;
+	wl_list_for_each(c, &fstack, flink)
+	{
+		if (c->serial == window_id)
+		{
+			wl_signal_add(&client_surface(c)->events.client_commit, &frame->client_commit);
+
+			attrib.fd[0] = fd;
+			attrib.fd[1] = -1;
+			attrib.fd[2] = -1;
+			attrib.fd[3] = -1;
+			attrib.width = width;
+			attrib.height = height;
+			attrib.n_planes = 1;
+			attrib.modifier = 0;
+			attrib.format = format;
+			attrib.stride[0] = align64(width * 4);
+			attrib.offset[0] = 0;
+
+			target = wlr_gles2_texture_from_dmabuf(client_surface(c)->renderer, &attrib);
+			if (target)
+			{
+				c->target = target;
+				frame->client = c;
+				frame->client_commit.notify = frame_client_handle_commit;
+			}
+
+			break;
+		}
+	}
+
+	if (frame->client == NULL)
+	{
+		zwindow_dmabuf_frame_v1_send_cancel(frame->resource,
+											ZWINDOW_DMABUF_FRAME_V1_CANCEL_REASON_PERMANENT);
+		frame_destroy(frame);
+	}
+	else
+	{
+		if (!wait_for_next_frame)
+		{
+			frame_client_handle_commit(&frame->client_commit, client_surface(frame->client));
+		}
+	}
 }
 
 static void seat_mapper_handle_destroy(struct wl_client *client,
@@ -759,6 +962,38 @@ struct input_device_seat_mapper_v1 *input_device_seat_mapper_v1_create(struct wl
 	wl_display_add_destroy_listener(display, &sm->display_destroy);
 
 	return sm;
+}
+
+static void force_scene_buffer_send_frame_done(struct wlr_scene_buffer *scene_buffer,
+									  struct timespec *now)
+{
+	wl_signal_emit_mutable(&scene_buffer->events.frame_done, now);
+}
+
+static void force_scene_node_send_frame_done(struct wlr_scene_node *node,
+		struct wlr_scene_output *scene_output, struct timespec *now) {
+	if (!node->enabled) {
+		return;
+	}
+
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *scene_buffer =
+			wlr_scene_buffer_from_node(node);
+
+		force_scene_buffer_send_frame_done(scene_buffer, now);
+	} else if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_tree *scene_tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &scene_tree->children, link) {
+			force_scene_node_send_frame_done(child, scene_output, now);
+		}
+	}
+}
+
+static void force_scene_output_send_frame_done(struct wlr_scene_output *scene_output,
+		struct timespec *now) {
+	force_scene_node_send_frame_done(&scene_output->scene->tree.node,
+		scene_output, now);
 }
 
 void seatinit(struct wl_display *display, int i)
@@ -1198,6 +1433,17 @@ void commitnotify(struct wl_listener *listener, void *data)
 	/* mark a pending resize as completed */
 	if (c->resize && c->resize <= c->surface.xdg->current.configure_serial)
 		c->resize = 0;
+
+	// struct wlr_surface *s = client_surface(c);
+	// if (s->has_buffer)
+	// {
+	// 	struct wlr_dmabuf_attributes attribs;
+	// 	wlr_buffer_get_dmabuf(&s->buffer->base, &attribs);
+	// 	// printf("Commitnotify: %dx%d, fd %d\n", attribs.width, attribs.height, attribs.fd[0]);
+	// 	struct wlr_texture *source = wlr_gles2_texture_from_dmabuf(s->renderer, &attribs);
+	// 	printf("Successfully imported source fd %d\n", attribs.fd[0]);
+	// 	wlr_texture_destroy(source);
+	// }
 }
 
 void createdecoration(struct wl_listener *listener, void *data)
@@ -2494,13 +2740,22 @@ void rendermon(struct wl_listener *listener, void *data)
 
 	/* Render if no XDG clients have an outstanding resize and are visible on
 	 * this monitor. */
-	wl_list_for_each(c, &clients, link) if (c->resize && !c->isfloating && client_is_rendered_on_mon(c, m) && !client_is_stopped(c)) goto skip;
+	wl_list_for_each(c, &clients, link)
+	{
+		if (c->resize && !c->isfloating && client_is_rendered_on_mon(c, m) && !client_is_stopped(c))
+			goto skip;
+	}
+
 	wlr_scene_output_commit(m->scene_output, NULL);
 
 skip:
 	/* Let clients know a frame has been rendered */
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	wlr_scene_output_send_frame_done(m->scene_output, &now);
+	if (force_render) {
+		force_scene_output_send_frame_done(m->scene_output, &now);
+	} else {
+		wlr_scene_output_send_frame_done(m->scene_output, &now);
+	}
 	wlr_output_state_finish(&pending);
 }
 
@@ -2877,6 +3132,7 @@ void setup(void)
 	wlr_fractional_scale_manager_v1_create(dpy, 1);
 	// wlr_gamma_control_manager_v1_create(dpy);
 	compositor_manager_v1_create(dpy);
+	window_capture_manager_v1_create(dpy);
 	seat_mapper = input_device_seat_mapper_v1_create(dpy);
 	virtual_pointer_mgr = wlr_virtual_pointer_manager_v1_create(dpy);
 	wl_signal_add(&virtual_pointer_mgr->events.new_virtual_pointer,
@@ -3449,6 +3705,7 @@ void associatex11(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, associate);
 
+	LISTEN(&client_surface(c)->events.commit, &c->commit, commitnotify);
 	LISTEN(&client_surface(c)->events.map, &c->map, mapnotify);
 	LISTEN(&client_surface(c)->events.unmap, &c->unmap, unmapnotify);
 }

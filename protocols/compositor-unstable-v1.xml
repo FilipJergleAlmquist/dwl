@@ -98,4 +98,88 @@
       </description>
     </request>
   </interface>
+  <interface name="zwindow_capture_manager_v1" version="1">
+    <description summary="capture frames for specific windows">
+      Clients can use this interface to capture frames from specific windows.
+    </description>
+
+    <request name="copy_window_frame">
+      <description summary="copies a frame for a window to specified buffer">
+        The done event is sent after the window frame has been copied.
+      </description>
+      <arg name="frame" type="new_id" interface="zwindow_dmabuf_frame_v1"/>
+      <arg name="window_id" type="uint" summary="window id"/>
+      <arg name="fd" type="fd" summary="file descriptor"/>
+      <arg name="width" type="uint" summary="width"/>
+      <arg name="height" type="uint" summary="height"/>
+      <arg name="format" type="uint" summary="drm format"/>
+      <arg name="wait_for_next_frame" type="uint" summary="waits for next frame if non zero"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not">
+        Unreferences the window capture manager. This request must be called as soon as it's no longer used.
+
+        It can be called at any time by the client. The client will still have
+        to close any FDs it has been given.
+      </description>
+    </request>
+  </interface>
+
+  <interface name="zwindow_dmabuf_frame_v1" version="1">
+    <description summary="a DMA-BUF frame">
+      This object represents a single DMA-BUF frame.
+
+      If the capture failed, the "cancel" event is sent. This can happen anytime
+      before the "done" event.
+
+      Once either a "done" or a "cancel" event is received, the client should
+      destroy the frame. Once an "object" event is received, the client is
+      responsible for closing the associated file descriptor.
+    </description>
+
+    <event name="done">
+      <description summary="indicates frame is has been copied">
+        This event is sent after after frame has been copied to buffer.
+      </description>
+    </event>
+
+    <enum name="cancel_reason">
+      <description summary="cancel reason">
+        Indicates reason for cancelling the frame.
+      </description>
+      <entry name="temporary" value="0"
+             summary="temporary error, source will produce more frames"/>
+      <entry name="permanent" value="1"
+             summary="fatal error, source will not produce frames"/>
+      <entry name="resizing" value="2"
+             summary="temporary error, source will produce more frames"/>
+    </enum>
+
+    <event name="cancel">
+      <description summary="indicates the frame is no longer valid">
+        If the capture failed or if the frame is no longer valid after the
+        "frame" event has been emitted, this event will be used to inform the
+        client to scrap the frame.
+
+        If the failure is temporary, the client may capture again the same
+        source. If the failure is permanent, any further attempts to capture the
+        same source will fail again.
+
+        After receiving this event, the client should destroy this object.
+      </description>
+      <arg name="reason" type="uint" enum="cancel_reason"
+           summary="indicates a reason for cancelling this frame capture"/>
+    </event>
+
+    <request name="destroy" type="destructor">
+      <description summary="delete this object, used or not">
+        Unreferences the frame. This request must be called as soon as its no
+        longer used.
+
+        It can be called at any time by the client. The client will still have
+        to close any FDs it has been given.
+      </description>
+    </request>
+  </interface>
 </protocol>

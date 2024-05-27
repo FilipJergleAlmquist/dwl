@@ -3,6 +3,7 @@ static const int mode_width              = 16200;  /* output width */
 static const int mode_height             = 2400;   /* output height */
 static const float mode_refresh          = 240.0;  /* output refresh rate */
 static const bool fullscreen_resize      = false;  /* resize window when toggling fullscreen */
+static const bool force_render      	 = false;  /* render even when not visible */
 
 /* Taken from https://github.com/djpohly/dwl/issues/466 */
 #define COLOR(hex)    { ((hex >> 24) & 0xFF) / 255.0f, \
