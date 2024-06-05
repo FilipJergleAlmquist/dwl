@@ -22,8 +22,6 @@
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
-#include <wlr/render/wlr_renderer.h>
-#include <wlr/render/gles2.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_control_v1.h>
@@ -59,6 +57,7 @@
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 #ifdef XWAYLAND
@@ -185,7 +184,7 @@ typedef struct
 	uint32_t resize; /* configure serial of a pending resize */
 	uint32_t serial;
 	const char *display_name;
-	struct wlr_texture *target;
+	struct wlr_buffer *capture_buffer;
 } Client;
 
 typedef struct
@@ -777,6 +776,59 @@ static void frame_destroy(struct window_dmabuf_frame_v1 *frame)
 	free(frame);
 }
 
+struct wlr_dmabuf_buffer {
+	struct wlr_buffer base;
+	struct wlr_dmabuf_attributes dmabuf;
+	bool saved;
+};
+
+static const struct wlr_buffer_impl dmabuf_buffer_impl;
+
+static struct wlr_dmabuf_buffer *dmabuf_buffer_from_buffer(
+		struct wlr_buffer *wlr_buffer) {
+	struct wlr_dmabuf_buffer *buffer;
+	assert(wlr_buffer->impl == &dmabuf_buffer_impl);
+	buffer = wl_container_of(wlr_buffer, buffer, base);
+	return buffer;
+}
+
+static void dmabuf_buffer_destroy(struct wlr_buffer *wlr_buffer) {
+	struct wlr_dmabuf_buffer *buffer = dmabuf_buffer_from_buffer(wlr_buffer);
+	if (buffer->saved) {
+		wlr_dmabuf_attributes_finish(&buffer->dmabuf);
+	}
+	free(buffer);
+}
+
+static bool dmabuf_buffer_get_dmabuf(struct wlr_buffer *wlr_buffer,
+		struct wlr_dmabuf_attributes *dmabuf) {
+	struct wlr_dmabuf_buffer *buffer = dmabuf_buffer_from_buffer(wlr_buffer);
+	if (buffer->dmabuf.n_planes == 0) {
+		return false;
+	}
+	*dmabuf = buffer->dmabuf;
+	return true;
+}
+
+static const struct wlr_buffer_impl dmabuf_buffer_impl = {
+	.destroy = dmabuf_buffer_destroy,
+	.get_dmabuf = dmabuf_buffer_get_dmabuf,
+};
+
+static struct wlr_dmabuf_buffer *dmabuf_buffer_create(
+		struct wlr_dmabuf_attributes *dmabuf) {
+	struct wlr_dmabuf_buffer *buffer = calloc(1, sizeof(*buffer));
+	if (buffer == NULL) {
+		return NULL;
+	}
+	wlr_buffer_init(&buffer->base, &dmabuf_buffer_impl,
+		dmabuf->width, dmabuf->height);
+
+	buffer->dmabuf = *dmabuf;
+
+	return buffer;
+}
+
 static void frame_client_handle_commit(struct wl_listener *listener,
 									   void *data)
 {
@@ -786,8 +838,9 @@ static void frame_client_handle_commit(struct wl_listener *listener,
 	struct wlr_surface *surface = client_surface(c);
 	struct wlr_buffer *buffer = &surface->buffer->base;
 	struct wlr_dmabuf_attributes attribs = {0};
-	struct wlr_texture *target = c->target;
+	struct wlr_buffer *capture_buffer = c->capture_buffer;
 	struct wlr_texture *source;
+	struct wlr_render_pass *pass;
 
 	wl_list_remove(&frame->client_commit.link);
 	wl_list_init(&frame->client_commit.link);
@@ -799,14 +852,30 @@ static void frame_client_handle_commit(struct wl_listener *listener,
 		return;
 	}
 
-	source = wlr_gles2_texture_from_dmabuf(surface->renderer, &attribs);
-
-	if (source && target)
+	source = wlr_texture_from_dmabuf(surface->renderer, &attribs);
+	if (source && capture_buffer)
 	{
-		wlr_gles2_texture_copy(source, target);
+		pass = wlr_renderer_begin_buffer_pass(surface->renderer, capture_buffer, NULL);
+		if (pass == NULL)
+		{
+			wlr_log(WLR_ERROR, "Failed to begin render pass with GPU destination buffer");
+			goto error_capture;
+		}
+
+		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
+											  .texture = source,
+											  .blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+										  });
+		if (!wlr_render_pass_submit(pass))
+		{
+			wlr_log(WLR_ERROR, "Failed to submit GPU render pass");
+			goto error_capture;
+		}
+
+error_capture:
 		wlr_texture_destroy(source);
-		wlr_texture_destroy(target);
-		c->target = NULL;
+		wlr_buffer_drop(capture_buffer);
+		c->capture_buffer = NULL;
 	}
 
 	zwindow_dmabuf_frame_v1_send_done(frame->resource);
@@ -826,7 +895,7 @@ void copy_window_frame(struct wl_client *client, struct wl_resource *manager_res
 	struct window_capture_manager_v1 *manager;
 	uint32_t version;
 	struct wlr_dmabuf_attributes attrib = {0};
-	struct wlr_texture *target;
+	struct wlr_buffer *capture_buffer;
 
 	if (frame == NULL)
 	{
@@ -870,10 +939,10 @@ void copy_window_frame(struct wl_client *client, struct wl_resource *manager_res
 			attrib.stride[0] = align64(width * 4);
 			attrib.offset[0] = 0;
 
-			target = wlr_gles2_texture_from_dmabuf(client_surface(c)->renderer, &attrib);
-			if (target)
+			capture_buffer = &dmabuf_buffer_create(&attrib)->base;
+			if (capture_buffer)
 			{
-				c->target = target;
+				c->capture_buffer = capture_buffer;
 				frame->client = c;
 				frame->client_commit.notify = frame_client_handle_commit;
 			}
@@ -965,35 +1034,42 @@ struct input_device_seat_mapper_v1 *input_device_seat_mapper_v1_create(struct wl
 }
 
 static void force_scene_buffer_send_frame_done(struct wlr_scene_buffer *scene_buffer,
-									  struct timespec *now)
+											   struct timespec *now)
 {
 	wl_signal_emit_mutable(&scene_buffer->events.frame_done, now);
 }
 
 static void force_scene_node_send_frame_done(struct wlr_scene_node *node,
-		struct wlr_scene_output *scene_output, struct timespec *now) {
-	if (!node->enabled) {
+											 struct wlr_scene_output *scene_output, struct timespec *now)
+{
+	if (!node->enabled)
+	{
 		return;
 	}
 
-	if (node->type == WLR_SCENE_NODE_BUFFER) {
+	if (node->type == WLR_SCENE_NODE_BUFFER)
+	{
 		struct wlr_scene_buffer *scene_buffer =
 			wlr_scene_buffer_from_node(node);
 
 		force_scene_buffer_send_frame_done(scene_buffer, now);
-	} else if (node->type == WLR_SCENE_NODE_TREE) {
+	}
+	else if (node->type == WLR_SCENE_NODE_TREE)
+	{
 		struct wlr_scene_tree *scene_tree = wlr_scene_tree_from_node(node);
 		struct wlr_scene_node *child;
-		wl_list_for_each(child, &scene_tree->children, link) {
+		wl_list_for_each(child, &scene_tree->children, link)
+		{
 			force_scene_node_send_frame_done(child, scene_output, now);
 		}
 	}
 }
 
 static void force_scene_output_send_frame_done(struct wlr_scene_output *scene_output,
-		struct timespec *now) {
+											   struct timespec *now)
+{
 	force_scene_node_send_frame_done(&scene_output->scene->tree.node,
-		scene_output, now);
+									 scene_output, now);
 }
 
 void seatinit(struct wl_display *display, int i)
@@ -2751,9 +2827,12 @@ void rendermon(struct wl_listener *listener, void *data)
 skip:
 	/* Let clients know a frame has been rendered */
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	if (force_render) {
+	if (force_render)
+	{
 		force_scene_output_send_frame_done(m->scene_output, &now);
-	} else {
+	}
+	else
+	{
 		wlr_scene_output_send_frame_done(m->scene_output, &now);
 	}
 	wlr_output_state_finish(&pending);
