@@ -1502,8 +1502,9 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data)
 void commitnotify(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, commit);
+	struct wlr_surface *surface = client_surface(c);
 
-	if (client_surface(c)->mapped)
+	if (surface && surface->mapped)
 		resize(c, c->geom, (c->isfloating && !c->isfullscreen));
 
 	/* mark a pending resize as completed */
