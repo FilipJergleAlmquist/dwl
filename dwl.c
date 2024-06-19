@@ -699,7 +699,7 @@ struct compositor_manager_v1 *compositor_manager_v1_create(struct wl_display *di
 }
 
 void copy_window_frame(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id, uint32_t window_id,
-					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t wait_for_next_frame);
+					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t modifier_lo, uint32_t modifier_hi, uint32_t wait_for_next_frame);
 
 static const struct zwindow_capture_manager_v1_interface window_capture_manager_impl = {
 	.copy_window_frame = copy_window_frame,
@@ -888,7 +888,7 @@ uint32_t align64(uint32_t value)
 }
 
 void copy_window_frame(struct wl_client *client, struct wl_resource *manager_resource, uint32_t id, uint32_t window_id,
-					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t wait_for_next_frame)
+					   int32_t fd, uint32_t width, uint32_t height, uint32_t format, uint32_t modifier_lo, uint32_t modifier_hi, uint32_t wait_for_next_frame)
 {
 	Client *c;
 	struct window_dmabuf_frame_v1 *frame = calloc(1, sizeof(*frame));
@@ -934,7 +934,7 @@ void copy_window_frame(struct wl_client *client, struct wl_resource *manager_res
 			attrib.width = width;
 			attrib.height = height;
 			attrib.n_planes = 1;
-			attrib.modifier = 0;
+			attrib.modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
 			attrib.format = format;
 			attrib.stride[0] = align64(width * 4);
 			attrib.offset[0] = 0;

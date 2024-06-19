@@ -113,6 +113,8 @@
       <arg name="width" type="uint" summary="width"/>
       <arg name="height" type="uint" summary="height"/>
       <arg name="format" type="uint" summary="drm format"/>
+      <arg name="modifier_lo" type="uint" summary="drm format modifier low bits"/>
+      <arg name="modifier_hi" type="uint" summary="drm format modifier high bits"/>
       <arg name="wait_for_next_frame" type="uint" summary="waits for next frame if non zero"/>
     </request>
 
