@@ -776,7 +776,8 @@ static void frame_destroy(struct window_dmabuf_frame_v1 *frame)
 	free(frame);
 }
 
-struct wlr_dmabuf_buffer {
+struct wlr_dmabuf_buffer
+{
 	struct wlr_buffer base;
 	struct wlr_dmabuf_attributes dmabuf;
 	bool saved;
@@ -785,25 +786,30 @@ struct wlr_dmabuf_buffer {
 static const struct wlr_buffer_impl dmabuf_buffer_impl;
 
 static struct wlr_dmabuf_buffer *dmabuf_buffer_from_buffer(
-		struct wlr_buffer *wlr_buffer) {
+	struct wlr_buffer *wlr_buffer)
+{
 	struct wlr_dmabuf_buffer *buffer;
 	assert(wlr_buffer->impl == &dmabuf_buffer_impl);
 	buffer = wl_container_of(wlr_buffer, buffer, base);
 	return buffer;
 }
 
-static void dmabuf_buffer_destroy(struct wlr_buffer *wlr_buffer) {
+static void dmabuf_buffer_destroy(struct wlr_buffer *wlr_buffer)
+{
 	struct wlr_dmabuf_buffer *buffer = dmabuf_buffer_from_buffer(wlr_buffer);
-	if (buffer->saved) {
+	if (buffer->saved)
+	{
 		wlr_dmabuf_attributes_finish(&buffer->dmabuf);
 	}
 	free(buffer);
 }
 
 static bool dmabuf_buffer_get_dmabuf(struct wlr_buffer *wlr_buffer,
-		struct wlr_dmabuf_attributes *dmabuf) {
+									 struct wlr_dmabuf_attributes *dmabuf)
+{
 	struct wlr_dmabuf_buffer *buffer = dmabuf_buffer_from_buffer(wlr_buffer);
-	if (buffer->dmabuf.n_planes == 0) {
+	if (buffer->dmabuf.n_planes == 0)
+	{
 		return false;
 	}
 	*dmabuf = buffer->dmabuf;
@@ -816,13 +822,15 @@ static const struct wlr_buffer_impl dmabuf_buffer_impl = {
 };
 
 static struct wlr_dmabuf_buffer *dmabuf_buffer_create(
-		struct wlr_dmabuf_attributes *dmabuf) {
+	struct wlr_dmabuf_attributes *dmabuf)
+{
 	struct wlr_dmabuf_buffer *buffer = calloc(1, sizeof(*buffer));
-	if (buffer == NULL) {
+	if (buffer == NULL)
+	{
 		return NULL;
 	}
 	wlr_buffer_init(&buffer->base, &dmabuf_buffer_impl,
-		dmabuf->width, dmabuf->height);
+					dmabuf->width, dmabuf->height);
 
 	buffer->dmabuf = *dmabuf;
 
@@ -871,13 +879,16 @@ static void frame_client_handle_commit(struct wl_listener *listener,
 			wlr_log(WLR_ERROR, "Failed to submit GPU render pass");
 			goto error_capture;
 		}
-
-error_capture:
-		wlr_texture_destroy(source);
-		wlr_buffer_drop(capture_buffer);
-		c->capture_buffer = NULL;
 	}
 
+error_capture:
+	wlr_texture_destroy(source);
+	if (wlr_buffer_get_dmabuf(capture_buffer, &attribs))
+	{
+		close(attribs.fd[0]);
+	}
+	wlr_buffer_drop(capture_buffer);
+	c->capture_buffer = NULL;
 	zwindow_dmabuf_frame_v1_send_done(frame->resource);
 	frame_destroy(frame);
 }
@@ -956,6 +967,7 @@ void copy_window_frame(struct wl_client *client, struct wl_resource *manager_res
 		zwindow_dmabuf_frame_v1_send_cancel(frame->resource,
 											ZWINDOW_DMABUF_FRAME_V1_CANCEL_REASON_PERMANENT);
 		frame_destroy(frame);
+		close(fd);
 	}
 	else
 	{
