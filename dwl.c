@@ -3799,7 +3799,6 @@ void associatex11(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, associate);
 
-	LISTEN(&client_surface(c)->events.commit, &c->commit, commitnotify);
 	LISTEN(&client_surface(c)->events.map, &c->map, mapnotify);
 	LISTEN(&client_surface(c)->events.unmap, &c->unmap, unmapnotify);
 }
