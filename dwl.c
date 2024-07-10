@@ -853,14 +853,7 @@ static void frame_client_handle_commit(struct wl_listener *listener,
 	wl_list_remove(&frame->client_commit.link);
 	wl_list_init(&frame->client_commit.link);
 
-	if (!wlr_buffer_get_dmabuf(buffer, &attribs))
-	{
-		zwindow_dmabuf_frame_v1_send_cancel(frame->resource, ZWINDOW_DMABUF_FRAME_V1_CANCEL_REASON_TEMPORARY);
-		frame_destroy(frame);
-		return;
-	}
-
-	source = wlr_texture_from_dmabuf(surface->renderer, &attribs);
+	source = wlr_texture_from_buffer(surface->renderer, buffer);
 	if (source && capture_buffer)
 	{
 		pass = wlr_renderer_begin_buffer_pass(surface->renderer, capture_buffer, NULL);
