@@ -766,6 +766,7 @@ struct window_dmabuf_frame_v1
 
 static void frame_destroy(struct window_dmabuf_frame_v1 *frame)
 {
+	struct wlr_dmabuf_attributes attrib = {0};
 	if (frame == NULL)
 	{
 		return;
@@ -773,6 +774,15 @@ static void frame_destroy(struct window_dmabuf_frame_v1 *frame)
 	wl_list_remove(&frame->client_commit.link);
 	// Make the frame resource inert
 	wl_resource_set_user_data(frame->resource, NULL);
+	if (frame->client && frame->client->capture_buffer) 
+	{
+		if (wlr_buffer_get_dmabuf(frame->client->capture_buffer, &attrib))
+		{
+			close(attrib.fd[0]);
+			wlr_buffer_drop(frame->client->capture_buffer);
+			frame->client->capture_buffer = NULL;
+		}
+	}
 	free(frame);
 }
 
@@ -2785,8 +2795,9 @@ void printstatus(void)
 			printf("%s title %s\n", m->wlr_output->name, title ? title : broken);
 			printf("%s appid %s\n", m->wlr_output->name, appid ? appid : broken);
 			printf("%s fullscreen %u\n", m->wlr_output->name, c->isfullscreen);
-			printf("%s floating %u\n", m->wlr_output->name, c->isfloating);
-			printf("%s pid %u\n", m->wlr_output->name, pid);
+			// printf("%s floating %u\n", m->wlr_output->name, c->isfloating);
+			printf("%s wid %u\n", m->wlr_output->name, pid);
+			printf("%s pid %u\n", m->wlr_output->name, c->serial);
 			sel = c->tags;
 		}
 		else
@@ -2794,14 +2805,14 @@ void printstatus(void)
 			printf("%s title \n", m->wlr_output->name);
 			printf("%s appid \n", m->wlr_output->name);
 			printf("%s fullscreen \n", m->wlr_output->name);
-			printf("%s floating \n", m->wlr_output->name);
+			// printf("%s floating \n", m->wlr_output->name);
 			sel = 0;
 		}
 
-		printf("%s selmon %u\n", m->wlr_output->name, m == selmon);
-		printf("%s tags %u %u %u %u\n", m->wlr_output->name, occ, m->tagset[m->seltags],
-			   sel, urg);
-		printf("%s layout %s\n", m->wlr_output->name, m->ltsymbol);
+		// printf("%s selmon %u\n", m->wlr_output->name, m == selmon);
+		// printf("%s tags %u %u %u %u\n", m->wlr_output->name, occ, m->tagset[m->seltags],
+		//    sel, urg);
+		// printf("%s layout %s\n", m->wlr_output->name, m->ltsymbol);
 	}
 	fflush(stdout);
 }
@@ -2828,7 +2839,8 @@ void rendermon(struct wl_listener *listener, void *data)
 			goto skip;
 	}
 
-	if (render_scene) {
+	if (render_scene)
+	{
 		wlr_scene_output_commit(m->scene_output, NULL);
 	}
 
