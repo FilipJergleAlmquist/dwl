@@ -209,7 +209,7 @@ client_get_pid(Client *c) {
 		xc = xcb_connect(c->display_name, NULL);
 		err = xcb_connection_has_error(xc);
 		if (err) {
-			fprintf(stderr, "xcb_connect to X server failed with code %d\n. Return old PID\n", err);
+			wlr_log(WLR_ERROR, "xcb_connect to X server failed with code %d\n. Return old PID\n", err);
 			return xwayland_surf->pid;
 		}
     	cookie = xcb_get_property(xc, 0, xwayland_surf->window_id, netatom[NetWMPid], XCB_ATOM_CARDINAL, 0, 1);
@@ -322,7 +322,7 @@ static inline void
 client_notify_enter(struct wlr_surface *s, struct wlr_seat *seat)
 {
 	struct wlr_keyboard *kb = wlr_seat_get_keyboard(seat);
-	printf("[Clientnotifyenter], surface: %lu, kb: %lu, seat: %lu\n", (uint64_t)s, (uint64_t)kb, (uint64_t)seat);
+	wlr_log(WLR_DEBUG, "Clientnotifyenter, surface: %p, kb: %p, seat: %p\n", s, kb, seat);
 	if (kb)
 		wlr_seat_keyboard_notify_enter(seat, s, kb->keycodes,
 				kb->num_keycodes, &kb->modifiers);
