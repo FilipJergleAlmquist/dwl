@@ -629,6 +629,7 @@ void raise_window(struct wl_client *client, struct wl_resource *manager_resource
 				  uint32_t window_id)
 {
 	Client *c;
+	struct wlr_box geom;
 	wlr_log(WLR_INFO, "Got raise window request for %u", window_id);
 
 	wl_list_for_each(c, &fstack, flink)
@@ -638,7 +639,10 @@ void raise_window(struct wl_client *client, struct wl_resource *manager_resource
 		{
 			if (!client_is_x11(c)) {
 				// Workaround for focusing Android windows
-				wlr_xdg_toplevel_set_size(c->surface.xdg->toplevel, c->bounds.width, c->bounds.height);
+				// Trigger configure event but keep size
+				client_get_geometry(c, &geom);
+				wlr_log(WLR_INFO, "Configure %u to %dx%d", window_id, geom.width, geom.height);
+				wlr_xdg_toplevel_set_size(c->surface.xdg->toplevel, geom.width, geom.height);
 			}
 			wlr_scene_node_raise_to_top(&c->scene->node);
 			wlr_scene_node_reparent(&c->scene->node, layers[LyrTop]);
@@ -2826,6 +2830,7 @@ void printstatus(const char* reason)
 			printf("fullscreen %u\n", c->isfullscreen);
 			printf("pid %u\n", pid);
 			printf("wid %u\n", c->serial);
+			printf("size %dx%d\n", c->geom.width, c->geom.height);
 			printf("\n");
 		}
 	}
