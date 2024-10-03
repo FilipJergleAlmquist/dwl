@@ -3945,12 +3945,14 @@ int main(int argc, char *argv[])
 	char *startup_cmd = NULL;
 	int c;
 
-	while ((c = getopt(argc, argv, "s:hdv")) != -1)
+	while ((c = getopt(argc, argv, "s:hdiv")) != -1)
 	{
 		if (c == 's')
 			startup_cmd = optarg;
 		else if (c == 'd')
 			log_level = WLR_DEBUG;
+		else if (c == 'i')
+			log_level = WLR_INFO;
 		else if (c == 'v')
 			die("dwl " VERSION);
 		else
@@ -3968,5 +3970,5 @@ int main(int argc, char *argv[])
 	return EXIT_SUCCESS;
 
 usage:
-	die("Usage: %s [-v] [-d] [-s startup command]", argv[0]);
+	die("Usage: %s [-v] [-d] [-i] [-s startup command]", argv[0]);
 }
