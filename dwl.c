@@ -150,6 +150,7 @@ typedef struct
 	/* Must keep these three elements in this order */
 	unsigned int type;	 /* XDGShell or X11* */
 	struct wlr_box geom; /* layout-relative, includes border */
+	struct wlr_box target_area; /* may not have been applied yet */
 	Monitor *mon;
 	struct wlr_scene_tree *scene;
 	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
@@ -612,13 +613,14 @@ void set_window_area(struct wl_client *client, struct wl_resource *manager_resou
 	{
 		if (c->serial == window_id)
 		{
-			wlr_log(WLR_INFO, "Resizing window");
-			if (geom.x != c->geom.x ||
-				geom.y != c->geom.y ||
-				geom.width != c->geom.width ||
-				geom.height != c->geom.height)
+			wlr_log(WLR_INFO, "Resizing window %u", window_id);
+			if (geom.x != c->target_area.x ||
+				geom.y != c->target_area.y ||
+				geom.width != c->target_area.width ||
+				geom.height != c->target_area.height)
 			{
 				resize(c, geom, 0);
+				c->target_area = geom;
 			}
 			break;
 		}
@@ -640,8 +642,12 @@ void raise_window(struct wl_client *client, struct wl_resource *manager_resource
 			if (!client_is_x11(c)) {
 				// Workaround for focusing Android windows
 				// Trigger configure event but keep size
-				client_get_geometry(c, &geom);
-				wlr_log(WLR_INFO, "Configure %u to %dx%d", window_id, geom.width, geom.height);
+				if (!wlr_box_empty(&c->target_area)) {
+					geom = c->target_area;
+				} else {
+					geom = c->geom;
+				}
+				wlr_log(WLR_INFO, "Configure %u to %dx%d or %dx%d", window_id, c->target_area.width, c->target_area.height, c->geom.width, c->geom.height);
 				wlr_xdg_toplevel_set_size(c->surface.xdg->toplevel, geom.width, geom.height);
 			}
 			wlr_scene_node_raise_to_top(&c->scene->node);
@@ -872,11 +878,8 @@ void render_node(struct wlr_scene_buffer *scene_buffer, int sx, int sy, void *us
 	};
 
 	if (source) {
-		wlr_log(WLR_DEBUG, "Adding texture %p at (%d,%d) - [%lf,%lf,%lf,%lf] (%dx%d) to render pass", source, sx, sy, scene_buffer->src_box.x, scene_buffer->src_box.y, scene_buffer->src_box.width, scene_buffer->src_box.height,
-		scene_buffer->dst_width, scene_buffer->dst_height, scene_buffer->transform);
 		dst_box.x += sx;
 		dst_box.y += sy;
-		wlr_log(WLR_DEBUG, "src_box [%lf,%lf,%lf,%lf], dst_box [%d,%d,%d,%d]", src_box.x, src_box.y, src_box.width, src_box.height, dst_box.x, dst_box.y, dst_box.width, dst_box.height);
 		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
 												.texture = source,
 												.blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
@@ -1422,19 +1425,20 @@ void chvt(const Arg *arg)
 
 void checkidleinhibitor(struct wlr_surface *exclude)
 {
-	int inhibited = 0, unused_lx, unused_ly;
-	struct wlr_idle_inhibitor_v1 *inhibitor;
-	wl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link)
-	{
-		struct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
-		struct wlr_scene_tree *tree = surface->data;
-		if (exclude != surface && (bypass_surface_visibility || (!tree || wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly))))
-		{
-			inhibited = 1;
-			break;
-		}
-	}
+	// int inhibited = 0, unused_lx, unused_ly;
+	// struct wlr_idle_inhibitor_v1 *inhibitor;
+	// wl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link)
+	// {
+	// 	struct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+	// 	struct wlr_scene_tree *tree = surface->data;
+	// 	if (exclude != surface && (bypass_surface_visibility || (!tree || wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly))))
+	// 	{
+	// 		inhibited = 1;
+	// 		break;
+	// 	}
+	// }
 
+	int inhibited = 1;
 	wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
 }
 
