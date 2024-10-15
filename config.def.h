@@ -1,9 +1,8 @@
 /* mode */
-static const int mode_width              = 16200;  /* output width */
+static const int mode_width              = 2400;   /* output width */
 static const int mode_height             = 2400;   /* output height */
 static const float mode_refresh          = 240.0;  /* output refresh rate */
 static const bool fullscreen_resize      = false;  /* resize window when toggling fullscreen */
-static const bool force_render      	 = true;   /* render even when not visible */
 static const bool render_scene           = false;  /* render the composited scene - not necessary for window capture */
 
 /* Taken from https://github.com/djpohly/dwl/issues/466 */
