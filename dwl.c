@@ -1081,15 +1081,13 @@ static void handle_register_input_device(struct wl_client *client,
 
 static void handle_request_virtual_touch(struct wl_client *client,
                                          struct wl_resource *resource,
-                                         const char *name, int32_t index,
-                                         uint32_t id) {
+                                         int32_t index, uint32_t id) {
   struct wl_resource *touch_resource;
   if (index < 0 || index >= MAX_NUM_SESSIONS) {
     wlr_log(WLR_ERROR, "Invalid index for virtual touch request %d", index);
     return;
   }
-  wlr_log(WLR_INFO, "Got request for virtual touch %s at seat index %d", name,
-          index);
+  wlr_log(WLR_INFO, "Got request for virtual touch at seat index %d", index);
   touch_resource = wl_resource_create(client, &zvirtual_touch_v1_interface,
                                       wl_resource_get_version(resource), id);
   wl_resource_set_implementation(touch_resource, &virtual_touch_impl,

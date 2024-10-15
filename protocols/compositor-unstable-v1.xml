@@ -84,7 +84,6 @@
         Request a virtual touch device for a specific seat index. 
         If it does not already exist it is created, otherwise the existing one is used.
       </description>
-      <arg name="name" type="string" summary="name of the input device"/>
       <arg name="seat_index" type="int" summary="seat index"/>
       <arg name="id" type="new_id" interface="zvirtual_touch_v1"/>
     </request>
