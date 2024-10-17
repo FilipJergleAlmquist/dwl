@@ -42,7 +42,7 @@ compositor-unstable-v1-private-protocol.h:
 config.h:
 	cp config.def.h $@
 clean:
-	rm -f dwl *.o *-protocol.h
+	rm -rf dwl *.o *-protocol.h AppDir
 
 dist: clean
 	mkdir -p dwl-$(VERSION)
@@ -68,3 +68,16 @@ uninstall:
 .SUFFIXES: .c .o
 .c.o:
 	$(CC) $(CPPFLAGS) $(DWLCFLAGS) -c $<
+
+linuxdeploy:
+	wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-static-x86_64.AppImage -O linuxdeploy
+	chmod +x linuxdeploy
+
+appimagetool:
+	wget "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+	chmod +x appimagetool
+
+appimage: linuxdeploy appimagetool
+	$(MAKE) install DESTDIR=AppDir PREFIX=/usr
+	./linuxdeploy --appdir AppDir -d dwl.desktop -i dwl.png
+	./appimagetool AppDir
