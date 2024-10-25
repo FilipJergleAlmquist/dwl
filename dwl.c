@@ -700,8 +700,9 @@ compositor_manager_v1_create(struct wl_display *display) {
 void copy_window_frame(struct wl_client *client,
                        struct wl_resource *manager_resource, uint32_t id,
                        uint32_t window_id, int32_t fd, uint32_t width,
-                       uint32_t height, uint32_t format, uint32_t modifier_lo,
-                       uint32_t modifier_hi, uint32_t wait_for_next_frame);
+                       uint32_t height, uint32_t pitch, uint32_t format,
+                       uint32_t modifier_lo, uint32_t modifier_hi,
+                       uint32_t wait_for_next_frame);
 
 static const struct zwindow_capture_manager_v1_interface
     window_capture_manager_impl = {
@@ -838,6 +839,7 @@ dmabuf_buffer_create(struct wlr_dmabuf_attributes *dmabuf) {
 struct render_data {
   struct wlr_render_pass *pass;
   struct wlr_renderer *renderer;
+  float scale_factor;
 };
 
 void render_node(struct wlr_scene_buffer *scene_buffer, int sx, int sy,
@@ -847,12 +849,13 @@ void render_node(struct wlr_scene_buffer *scene_buffer, int sx, int sy,
   struct wlr_texture *source =
       wlr_texture_from_buffer(rd->renderer, scene_buffer->buffer);
   struct wlr_fbox src_box = scene_buffer->src_box;
-  struct wlr_box dst_box = {.width = scene_buffer->dst_width,
-                            .height = scene_buffer->dst_height};
+  struct wlr_box dst_box = {.width = scene_buffer->dst_width * rd->scale_factor,
+                            .height =
+                                scene_buffer->dst_height * rd->scale_factor};
 
   if (source) {
-    dst_box.x += sx;
-    dst_box.y += sy;
+    dst_box.x += sx * rd->scale_factor;
+    dst_box.y += sy * rd->scale_factor;
     wlr_render_pass_add_texture(
         pass, &(struct wlr_render_texture_options){
                   .texture = source,
@@ -888,6 +891,7 @@ static void frame_client_handle_commit(struct wl_listener *listener,
     }
     rd.pass = pass;
     rd.renderer = surface->renderer;
+    rd.scale_factor = (float)capture_buffer->width / (float)c->geom.width;
     wlr_scene_node_for_each_buffer(&c->scene_surface->node, render_node, &rd);
     if (!wlr_render_pass_submit(pass)) {
       wlr_log(WLR_ERROR, "Failed to submit GPU render pass");
@@ -913,8 +917,9 @@ uint32_t align64(uint32_t value) { return (((value + 63) >> 6) << 6); }
 void copy_window_frame(struct wl_client *client,
                        struct wl_resource *manager_resource, uint32_t id,
                        uint32_t window_id, int32_t fd, uint32_t width,
-                       uint32_t height, uint32_t format, uint32_t modifier_lo,
-                       uint32_t modifier_hi, uint32_t wait_for_next_frame) {
+                       uint32_t height, uint32_t pitch, uint32_t format,
+                       uint32_t modifier_lo, uint32_t modifier_hi,
+                       uint32_t wait_for_next_frame) {
   Client *c;
   struct window_dmabuf_frame_v1 *frame = calloc(1, sizeof(*frame));
   struct window_capture_manager_v1 *manager;
@@ -960,7 +965,7 @@ void copy_window_frame(struct wl_client *client,
       attrib.n_planes = 1;
       attrib.modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
       attrib.format = format;
-      attrib.stride[0] = align64(width * 4);
+      attrib.stride[0] = pitch;
       attrib.offset[0] = 0;
 
       capture_buffer = &dmabuf_buffer_create(&attrib)->base;

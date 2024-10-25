@@ -171,6 +171,7 @@
       <arg name="fd" type="fd" summary="file descriptor"/>
       <arg name="width" type="uint" summary="width"/>
       <arg name="height" type="uint" summary="height"/>
+      <arg name="pitch" type="uint" summary="pitch"/>
       <arg name="format" type="uint" summary="drm format"/>
       <arg name="modifier_lo" type="uint" summary="drm format modifier low bits"/>
       <arg name="modifier_hi" type="uint" summary="drm format modifier high bits"/>
