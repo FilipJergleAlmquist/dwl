@@ -129,6 +129,22 @@ typedef struct {
 } Button;
 
 typedef struct Monitor Monitor;
+
+struct render_data {
+  struct wlr_render_pass *pass;
+  struct wlr_renderer *renderer;
+  float scale_factor_x;
+  float scale_factor_y;
+  int src_x;
+  int src_y;
+  int src_width;
+  int src_height;
+  int dst_x;
+  int dst_y;
+  int dst_width;
+  int dst_height;
+};
+
 typedef struct {
   /* Must keep these three elements in this order */
   unsigned int type;          /* XDGShell or X11* */
@@ -166,6 +182,7 @@ typedef struct {
   uint32_t serial;
   const char *display_name;
   struct wlr_buffer *capture_buffer;
+  struct render_data capture_data;
 } Client;
 
 typedef struct {
@@ -702,6 +719,9 @@ void copy_window_frame(struct wl_client *client,
                        uint32_t window_id, int32_t fd, uint32_t width,
                        uint32_t height, uint32_t pitch, uint32_t format,
                        uint32_t modifier_lo, uint32_t modifier_hi,
+                       uint32_t src_x, uint32_t src_y, uint32_t src_width,
+                       uint32_t src_height, uint32_t dst_x, uint32_t dst_y,
+                       uint32_t dst_width, uint32_t dst_height,
                        uint32_t wait_for_next_frame);
 
 static const struct zwindow_capture_manager_v1_interface
@@ -836,12 +856,6 @@ dmabuf_buffer_create(struct wlr_dmabuf_attributes *dmabuf) {
   return buffer;
 }
 
-struct render_data {
-  struct wlr_render_pass *pass;
-  struct wlr_renderer *renderer;
-  float scale_factor;
-};
-
 void render_node(struct wlr_scene_buffer *scene_buffer, int sx, int sy,
                  void *user_data) {
   struct render_data *rd = user_data;
@@ -849,13 +863,21 @@ void render_node(struct wlr_scene_buffer *scene_buffer, int sx, int sy,
   struct wlr_texture *source =
       wlr_texture_from_buffer(rd->renderer, scene_buffer->buffer);
   struct wlr_fbox src_box = scene_buffer->src_box;
-  struct wlr_box dst_box = {.width = scene_buffer->dst_width * rd->scale_factor,
-                            .height =
-                                scene_buffer->dst_height * rd->scale_factor};
+  struct wlr_box dst_box = {.x = rd->dst_x,
+                            .y = rd->dst_y,
+                            .width = rd->dst_width,
+                            .height = rd->dst_height};
 
   if (source) {
-    dst_box.x += sx * rd->scale_factor;
-    dst_box.y += sy * rd->scale_factor;
+    src_box.x += rd->src_x;
+    src_box.y += rd->src_y;
+    if (src_box.x >= source->width || src_box.y >= source->height) {
+      return;
+    }
+    src_box.width = MIN(source->width - src_box.x, rd->src_width);
+    src_box.height = MIN(source->height - src_box.y, rd->src_height);
+    dst_box.x += sx * rd->scale_factor_x;
+    dst_box.y += sy * rd->scale_factor_y;
     wlr_render_pass_add_texture(
         pass, &(struct wlr_render_texture_options){
                   .texture = source,
@@ -876,7 +898,7 @@ static void frame_client_handle_commit(struct wl_listener *listener,
   struct wlr_buffer *capture_buffer = c->capture_buffer;
   struct wlr_texture *source;
   struct wlr_render_pass *pass;
-  struct render_data rd;
+  struct render_data *rd;
 
   wl_list_remove(&frame->client_commit.link);
   wl_list_init(&frame->client_commit.link);
@@ -889,10 +911,12 @@ static void frame_client_handle_commit(struct wl_listener *listener,
               "Failed to begin render pass with GPU destination buffer");
       goto error_capture;
     }
-    rd.pass = pass;
-    rd.renderer = surface->renderer;
-    rd.scale_factor = (float)capture_buffer->width / (float)c->geom.width;
-    wlr_scene_node_for_each_buffer(&c->scene_surface->node, render_node, &rd);
+    rd = &c->capture_data;
+    rd->pass = pass;
+    rd->renderer = surface->renderer;
+    rd->scale_factor_x = (float)rd->src_width / (float)rd->dst_width;
+    rd->scale_factor_y = (float)rd->src_height / (float)rd->dst_height;
+    wlr_scene_node_for_each_buffer(&c->scene_surface->node, render_node, rd);
     if (!wlr_render_pass_submit(pass)) {
       wlr_log(WLR_ERROR, "Failed to submit GPU render pass");
       goto error_capture;
@@ -919,6 +943,9 @@ void copy_window_frame(struct wl_client *client,
                        uint32_t window_id, int32_t fd, uint32_t width,
                        uint32_t height, uint32_t pitch, uint32_t format,
                        uint32_t modifier_lo, uint32_t modifier_hi,
+                       uint32_t src_x, uint32_t src_y, uint32_t src_width,
+                       uint32_t src_height, uint32_t dst_x, uint32_t dst_y,
+                       uint32_t dst_width, uint32_t dst_height,
                        uint32_t wait_for_next_frame) {
   Client *c;
   struct window_dmabuf_frame_v1 *frame = calloc(1, sizeof(*frame));
@@ -926,6 +953,7 @@ void copy_window_frame(struct wl_client *client,
   uint32_t version;
   struct wlr_dmabuf_attributes attrib = {0};
   struct wlr_buffer *capture_buffer;
+  struct render_data *rd;
   struct timespec now;
 
   if (frame == NULL) {
@@ -970,6 +998,19 @@ void copy_window_frame(struct wl_client *client,
 
       capture_buffer = &dmabuf_buffer_create(&attrib)->base;
       if (capture_buffer) {
+        rd = &c->capture_data;
+        assert(capture_buffer->width >= dst_width &&
+               capture_buffer->height >= dst_height);
+
+        rd->src_x = src_x;
+        rd->src_y = src_y;
+        rd->src_width = src_width;
+        rd->src_height = src_height;
+        rd->dst_x = dst_x;
+        rd->dst_y = dst_y;
+        rd->dst_width = dst_width;
+        rd->dst_height = dst_height;
+
         c->capture_buffer = capture_buffer;
         frame->client = c;
         frame->client_commit.notify = frame_client_handle_commit;

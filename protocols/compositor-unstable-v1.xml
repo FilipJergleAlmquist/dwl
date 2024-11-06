@@ -175,6 +175,14 @@
       <arg name="format" type="uint" summary="drm format"/>
       <arg name="modifier_lo" type="uint" summary="drm format modifier low bits"/>
       <arg name="modifier_hi" type="uint" summary="drm format modifier high bits"/>
+      <arg name="src_x" type="uint" summary="source x position"/>
+      <arg name="src_y" type="uint" summary="source y position"/>
+      <arg name="src_width" type="uint" summary="source width"/>
+      <arg name="src_height" type="uint" summary="source height"/>
+      <arg name="dst_x" type="uint" summary="destination render x position"/>
+      <arg name="dst_y" type="uint" summary="destination render y position"/>
+      <arg name="dst_width" type="uint" summary="destination render width"/>
+      <arg name="dst_height" type="uint" summary="destination render height"/>
       <arg name="wait_for_next_frame" type="uint" summary="waits for next frame if non zero"/>
     </request>
 
