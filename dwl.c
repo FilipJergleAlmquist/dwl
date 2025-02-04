@@ -1203,6 +1203,9 @@ void seatinit(struct wl_display *display, int i) {
   wlr_log(WLR_INFO, "New seat %p", s);
   sprintf(name, "seat%d", i);
   seat = wlr_seat_create(display, name);
+  wlr_seat_set_capabilities(seat, WL_SEAT_CAPABILITY_POINTER |
+                                      WL_SEAT_CAPABILITY_TOUCH |
+                                      WL_SEAT_CAPABILITY_KEYBOARD);
   s->seat = seat;
   s->virtual_touch = NULL;
   s->touch_surface = NULL;
@@ -2304,14 +2307,6 @@ void inputdevice(struct wl_listener *listener, void *data) {
     /* TODO handle other input device types */
     break;
   }
-
-  /* We need to let the wlr_seat know what our capabilities are, which is
-   * communiciated to the client. In dwl we always have a cursor, even if
-   * there are no pointer devices, so we always include that capability. */
-  /* TODO do we actually require a cursor? */
-  caps = WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_TOUCH |
-         WL_SEAT_CAPABILITY_KEYBOARD;
-  wlr_seat_set_capabilities(s->seat, caps);
 }
 
 int keybinding(uint32_t mods, xkb_keysym_t sym) {
