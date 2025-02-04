@@ -2268,7 +2268,6 @@ void inputdevice(struct wl_listener *listener, void *data) {
   /* This event is raised by the backend when a new input device becomes
    * available. */
   struct wlr_input_device *device = data;
-  uint32_t caps;
   Seat *s;
   RegisteredSeat *rs;
   seat_index = MAX_NUM_SESSIONS;
