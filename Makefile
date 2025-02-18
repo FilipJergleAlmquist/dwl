@@ -70,7 +70,7 @@ uninstall:
 	$(CC) $(CPPFLAGS) $(DWLCFLAGS) -c $<
 
 linuxdeploy:
-	wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-static-x86_64.AppImage -O linuxdeploy
+	wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
 	chmod +x linuxdeploy
 
 appimagetool:
